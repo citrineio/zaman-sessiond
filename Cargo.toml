@@ -1,0 +1,11 @@
+[package]
+name = "zaman-sessiond"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+resolver = "3"
+
+[dependencies]
+futures-util = "=0.3.31"
+tokio = { version = "=1.43.0", features = ["macros", "rt", "signal", "time"] }
+zbus = { version = "=5.5.0", default-features = false, features = ["tokio"] }
