@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<node name="/com/kawnelectro/Zaman/Session1">
+  <interface name="com.kawnelectro.Zaman.Session1">
+    <method name="Launch">
+      <arg name="system_id" type="s" direction="in"/>
+      <arg name="rom_path" type="s" direction="in"/>
+    </method>
+    <method name="Stop"/>
+    <method name="Status">
+      <arg name="state" type="s" direction="out"/>
+      <arg name="system_id" type="s" direction="out"/>
+      <arg name="emulator_id" type="s" direction="out"/>
+      <arg name="rom_path" type="s" direction="out"/>
+      <arg name="last_result" type="s" direction="out"/>
+      <arg name="last_error" type="s" direction="out"/>
+    </method>
+    <method name="Version">
+      <arg name="version" type="s" direction="out"/>
+    </method>
+  </interface>
+</node>

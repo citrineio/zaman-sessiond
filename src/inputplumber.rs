@@ -33,6 +33,10 @@ impl Inventory {
     pub fn target_count(&self) -> usize {
         self.dbus_targets.len()
     }
+
+    pub fn has_system_input(&self) -> bool {
+        !self.composites.is_empty() && !self.dbus_targets.is_empty()
+    }
 }
 
 pub struct InputPlumber {
@@ -94,13 +98,13 @@ impl InputPlumber {
         }
 
         if composites.is_empty() {
-            return Err(message("InputPlumber reported no composite devices"));
-        }
-
-        if dbus_targets.is_empty() {
-            return Err(message(
-                "InputPlumber reported no normalized D-Bus input targets",
-            ));
+            eprintln!(
+                "InputPlumber currently reports no composite devices; continuing without system input."
+            );
+        } else if dbus_targets.is_empty() {
+            eprintln!(
+                "InputPlumber currently reports no normalized D-Bus input targets; continuing without system input."
+            );
         }
 
         Ok(Inventory {
@@ -110,6 +114,13 @@ impl InputPlumber {
     }
 
     pub async fn set_intercept_mode(&self, inventory: &Inventory, mode: u32) -> Result<()> {
+        if mode != INTERCEPT_NONE && !inventory.has_system_input() {
+            eprintln!(
+                "Skipping InterceptMode {mode}: normalized system input is currently unavailable."
+            );
+            return Ok(());
+        }
+
         for composite in &inventory.composites {
             let proxy = Proxy::new(
                 &self.connection,
@@ -127,6 +138,13 @@ impl InputPlumber {
     }
 
     pub async fn wait_for_guide(&self, inventory: &Inventory) -> Result<String> {
+        if !inventory.has_system_input() {
+            eprintln!(
+                "Guide supervision deferred: normalized system input is currently unavailable."
+            );
+            return std::future::pending::<Result<String>>().await;
+        }
+
         let mut listeners = JoinSet::new();
 
         for target in &inventory.dbus_targets {
@@ -147,7 +165,10 @@ impl InputPlumber {
             }
         }
 
-        Err(message("all InputPlumber event listeners stopped"))
+        eprintln!(
+            "All InputPlumber event listeners stopped; continuing without Guide supervision."
+        );
+        std::future::pending::<Result<String>>().await
     }
 }
 
@@ -166,4 +187,22 @@ async fn wait_for_guide(connection: Connection, target: String) -> Result<String
     }
 
     Err(message(format!("D-Bus event stream closed: {target}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Inventory;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn empty_inventory_is_a_valid_input_unavailable_state() {
+        let inventory = Inventory {
+            composites: Vec::new(),
+            dbus_targets: BTreeSet::new(),
+        };
+
+        assert_eq!(inventory.composite_count(), 0);
+        assert_eq!(inventory.target_count(), 0);
+        assert!(!inventory.has_system_input());
+    }
 }

@@ -1,0 +1,25 @@
+schema = 1
+
+[emulator]
+id = "mesence"
+name = "Mesen Community Edition"
+version = "2.2.1"
+systems = ["nes"]
+priority = 100
+
+[emulator.license]
+spdx = "GPL-3.0-or-later"
+source_url = "https://github.com/nesdev-org/MesenCE"
+patches = []
+
+[emulator.exec]
+argv = [
+  "/usr/lib/zaman/emulators/mesence/Mesen",
+  "--fullscreen",
+  "{rom.path}",
+]
+needs = ["gpu", "audio", "xwayland"]
+
+[emulator.input]
+target = "xb360"
+guide = "reserved"

@@ -46,6 +46,20 @@ impl UserSystemd {
         Ok(())
     }
 
+    pub async fn recover_orphaned_game(&self) -> Result<bool> {
+        let manager = self.manager().await?;
+        let loaded: zbus::Result<OwnedObjectPath> = manager.call("GetUnit", &(GAME_UNIT,)).await;
+        if loaded.is_err() {
+            return Ok(false);
+        }
+
+        self.stop(&GameHandle {
+            unit: GAME_UNIT.to_string(),
+        })
+        .await?;
+        Ok(true)
+    }
+
     pub async fn launch(&self, command: &CommandSpec) -> Result<GameHandle> {
         let manager = self.manager().await?;
 
@@ -59,7 +73,7 @@ impl UserSystemd {
         let mut removed_jobs = manager.receive_signal("JobRemoved").await?;
         let argv: Vec<&str> = command.argv().iter().map(String::as_str).collect();
         let exec_start = vec![(command.executable(), argv, false)];
-        let properties = vec![
+        let mut properties = vec![
             ("Description", Value::new("Zaman supervised game session")),
             ("Type", Value::new("exec")),
             ("ExecStart", Value::new(exec_start)),
@@ -68,6 +82,12 @@ impl UserSystemd {
             ("SendSIGKILL", Value::new(true)),
             ("CollectMode", Value::new("inactive-or-failed")),
         ];
+        if !command.environment().is_empty() {
+            properties.push(("Environment", Value::new(command.environment().to_vec())));
+        }
+        if let Some(directory) = command.working_directory() {
+            properties.push(("WorkingDirectory", Value::new(directory)));
+        }
         let auxiliary_units: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
 
         let job_path: OwnedObjectPath = manager

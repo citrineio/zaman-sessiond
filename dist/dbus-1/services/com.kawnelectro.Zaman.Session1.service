@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.kawnelectro.Zaman.Session1
+Exec=/usr/libexec/zaman-sessiond
+SystemdService=zaman-sessiond.service

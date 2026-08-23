@@ -1,33 +1,59 @@
+mod api;
 mod command;
+mod contract;
+mod daemon;
 mod error;
 mod inputplumber;
+mod registry;
 mod session;
 mod systemd;
 
-use crate::command::CommandSpec;
+use crate::api::{ApiCommand, SessionApi, SharedStatus};
+use crate::contract::{PATH, SERVICE, VERSION};
+use crate::daemon::{recover_runtime, run_worker};
 use crate::error::Result;
-use crate::inputplumber::InputPlumber;
-use crate::session::Session;
-use crate::systemd::UserSystemd;
+use crate::registry::Registry;
+use std::sync::Arc;
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::mpsc;
+use zbus::connection::Builder;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let command = CommandSpec::from_env()?;
-    let input = InputPlumber::connect().await?;
-    let inventory = input.discover().await?;
-    let systemd = UserSystemd::connect().await?;
+    let registry = Arc::new(Registry::load()?);
+    recover_runtime().await?;
 
-    println!(
-        "Discovered {} composite device(s) and {} normalized D-Bus target(s).",
-        inventory.composite_count(),
-        inventory.target_count()
-    );
+    let status = SharedStatus::new();
+    let (commands, receiver) = mpsc::channel(8);
+    let api = SessionApi::new(registry, status.clone(), commands.clone());
+    let connection = Builder::session()?
+        .serve_at(PATH, api)?
+        .name(SERVICE)?
+        .build()
+        .await?;
 
-    let mut session = Session::new(input, systemd, inventory);
-    let outcome = session.run(&command).await?;
+    println!("zaman-sessiond {VERSION} ready on {SERVICE} {PATH}");
 
-    println!("Session finished: {outcome}.");
-    println!("Final session state: {}.", session.state());
+    let worker = run_worker(receiver, status);
+    tokio::pin!(worker);
+
+    tokio::select! {
+        result = &mut worker => return result,
+        result = wait_for_shutdown_signal() => result?,
+    }
+
+    println!("zaman-sessiond shutting down.");
+    let _ = commands.send(ApiCommand::Shutdown).await;
+    worker.await
+}
+
+async fn wait_for_shutdown_signal() -> Result<()> {
+    let mut terminate = signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        _ = terminate.recv() => {}
+    }
 
     Ok(())
 }
