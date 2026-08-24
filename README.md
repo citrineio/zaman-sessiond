@@ -74,7 +74,23 @@ Each game runs as the transient user unit `zaman-game.service` with:
 InputPlumber composites and normalized D-Bus targets are discovered at launch.
 No username, controller model, VID/PID, event node, or composite index is part
 of the sessiond contract. Guide is reserved by setting InputPlumber PASS mode;
-cleanup restores NONE after Guide, D-Bus Stop, natural exit, or handled errors.
+cleanup restores NONE after D-Bus Stop, natural exit, or handled errors.
+
+The current Guide gesture implementation is deliberately non-destructive while
+the system menu and power broker are unfinished:
+
+- releasing before three seconds requests no system action and restores PASS;
+- three seconds emits and logs a system-menu validation event;
+- releasing a long hold restores PASS;
+- the validation event does not stop the game or change system power state.
+
+Guide holds beyond this threshold are deliberately not part of the contract.
+Some controllers, including the current bench controller, power themselves off
+after roughly five seconds. Shutdown therefore belongs in the system menu and
+must not depend on a longer Guide hold.
+
+This establishes and bench-qualifies gesture timing without allowing unfinished
+menu or shutdown paths to affect a running game.
 
 ## State model
 
@@ -99,6 +115,18 @@ starts an isolated daemon against temporary registry data, introspects the
 D-Bus API, verifies a natural exit, and verifies an explicit `zamanctl stop`
 terminates the entire transient unit and restores input interception.
 
+With a controller connected, the non-destructive Guide thresholds can be
+validated interactively:
+
+```bash
+./tools/guide-validation.sh
+```
+
+The validator asks for a short press and a three-to-four-second hold. It verifies
+the expected event after each gesture and verifies that the supervised test game
+remains active. It uses a synthetic supervised process and does not qualify
+MesenCE or any other production emulator.
+
 ## Distribution files
 
 - `dist/systemd/user/zaman-sessiond.service`
@@ -114,6 +142,9 @@ later Buildroot integration mechanical.
 
 - Install and validate the production user unit in the kiosk login session.
 - Add controller hotplug after a session has already started.
+- Connect the three-second Guide event to game freeze and the full-screen menu.
+- Add shutdown to the full-screen menu and qualify the physical power-key path.
+- Qualify MesenCE launch, natural exit, and explicit Stop as a production session.
 - Add owned-key emulator configuration generation.
 - Replace path-based frontend launches with library game IDs when the Zaman
   library service becomes authoritative.

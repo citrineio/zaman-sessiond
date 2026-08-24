@@ -1,6 +1,8 @@
 use crate::error::{message, Result};
+use crate::guide::{GuideAction, GuideButton};
 use futures_util::StreamExt;
 use std::collections::BTreeSet;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use zbus::fdo::ObjectManagerProxy;
 use zbus::{Connection, Proxy};
@@ -41,6 +43,36 @@ impl Inventory {
 
 pub struct InputPlumber {
     connection: Connection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuideEvent {
+    pub target: String,
+    pub action: GuideAction,
+}
+
+pub struct GuideMonitor {
+    receiver: mpsc::Receiver<GuideEvent>,
+    listeners: JoinSet<()>,
+}
+
+impl GuideMonitor {
+    pub async fn next(&mut self) -> GuideEvent {
+        if let Some(event) = self.receiver.recv().await {
+            return event;
+        }
+
+        eprintln!(
+            "All InputPlumber event listeners stopped; continuing without Guide supervision."
+        );
+        std::future::pending::<GuideEvent>().await
+    }
+}
+
+impl Drop for GuideMonitor {
+    fn drop(&mut self) {
+        self.listeners.abort_all();
+    }
 }
 
 impl InputPlumber {
@@ -137,56 +169,84 @@ impl InputPlumber {
         Ok(())
     }
 
-    pub async fn wait_for_guide(&self, inventory: &Inventory) -> Result<String> {
+    pub fn monitor_guide(&self, inventory: &Inventory) -> GuideMonitor {
+        let (sender, receiver) = mpsc::channel(16);
+        let mut listeners = JoinSet::new();
+
         if !inventory.has_system_input() {
             eprintln!(
                 "Guide supervision deferred: normalized system input is currently unavailable."
             );
-            return std::future::pending::<Result<String>>().await;
-        }
+        } else {
+            for target in &inventory.dbus_targets {
+                let connection = self.connection.clone();
+                let target = target.clone();
+                let sender = sender.clone();
 
-        let mut listeners = JoinSet::new();
-
-        for target in &inventory.dbus_targets {
-            let connection = self.connection.clone();
-            let target = target.clone();
-
-            listeners.spawn(async move { wait_for_guide(connection, target).await });
-        }
-
-        while let Some(completed) = listeners.join_next().await {
-            match completed {
-                Ok(Ok(target)) => {
-                    listeners.abort_all();
-                    return Ok(target);
-                }
-                Ok(Err(error)) => eprintln!("Input listener failed: {error}"),
-                Err(error) => eprintln!("Input listener task failed: {error}"),
+                listeners.spawn(async move {
+                    if let Err(error) = monitor_guide_target(connection, target, sender).await {
+                        eprintln!("Input listener failed: {error}");
+                    }
+                });
             }
         }
 
-        eprintln!(
-            "All InputPlumber event listeners stopped; continuing without Guide supervision."
-        );
-        std::future::pending::<Result<String>>().await
+        drop(sender);
+        GuideMonitor {
+            receiver,
+            listeners,
+        }
     }
 }
 
-async fn wait_for_guide(connection: Connection, target: String) -> Result<String> {
+async fn monitor_guide_target(
+    connection: Connection,
+    target: String,
+    sender: mpsc::Sender<GuideEvent>,
+) -> Result<()> {
     let proxy = Proxy::new(&connection, SERVICE, target.as_str(), DBUS_DEVICE_INTERFACE).await?;
     let mut events = proxy.receive_signal("InputEvent").await?;
 
     println!("Subscribed to {target}");
+    let mut guide = GuideButton::default();
 
-    while let Some(message) = events.next().await {
-        let (event, value): (String, f64) = message.body().deserialize()?;
+    while let Some(signal) = events.next().await {
+        let (event, value): (String, f64) = signal.body().deserialize()?;
 
-        if event == "ui_guide" && value > 0.5 {
-            return Ok(target);
+        if event != "ui_guide" {
+            continue;
+        }
+
+        let actions = if value > 0.5 {
+            guide.press()
+        } else {
+            guide.release()
+        };
+
+        if !send_actions(&sender, &target, actions).await {
+            return Ok(());
         }
     }
 
     Err(message(format!("D-Bus event stream closed: {target}")))
+}
+
+async fn send_actions(
+    sender: &mpsc::Sender<GuideEvent>,
+    target: &str,
+    actions: Vec<GuideAction>,
+) -> bool {
+    for action in actions {
+        let event = GuideEvent {
+            target: target.to_string(),
+            action,
+        };
+        if sender.send(event).await.is_err() {
+            return false;
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]

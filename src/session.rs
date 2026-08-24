@@ -1,6 +1,7 @@
 use crate::command::CommandSpec;
 use crate::error::{message, Result};
-use crate::inputplumber::{InputPlumber, Inventory, INTERCEPT_NONE, INTERCEPT_PASS};
+use crate::guide::GuideAction;
+use crate::inputplumber::{GuideEvent, InputPlumber, Inventory, INTERCEPT_NONE, INTERCEPT_PASS};
 use crate::systemd::UserSystemd;
 use std::fmt;
 use tokio::sync::watch;
@@ -22,7 +23,6 @@ impl fmt::Display for SessionState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionOutcome {
-    Guide { target: String },
     GameExited,
     StopRequested,
 }
@@ -30,7 +30,6 @@ pub enum SessionOutcome {
 impl fmt::Display for SessionOutcome {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Guide { target } => write!(formatter, "Guide request from {target}"),
             Self::GameExited => write!(formatter, "game exited normally"),
             Self::StopRequested => write!(formatter, "stop requested by the session service"),
         }
@@ -102,18 +101,20 @@ impl Session {
     ) -> Result<SessionOutcome> {
         let game = self.systemd.launch(command).await?;
         self.transition(SessionState::Running);
-        println!("Guide, D-Bus Stop, and natural game exit are now supervised.");
+        println!("Guide menu requests, D-Bus Stop, and natural game exit are now supervised.");
 
-        let event_result = {
+        let mut guide_monitor = self.input.monitor_guide(&self.inventory);
+
+        let event_result: Result<SessionOutcome> = loop {
             tokio::select! {
-                guide = self.input.wait_for_guide(&self.inventory) => {
-                    guide.map(|target| SessionOutcome::Guide { target })
+                guide = guide_monitor.next() => {
+                    handle_guide_event(&self.input, &self.inventory, guide).await;
                 }
                 game_exit = self.systemd.wait_for_exit(&game) => {
-                    game_exit.map(|()| SessionOutcome::GameExited)
+                    break game_exit.map(|()| SessionOutcome::GameExited);
                 }
                 stop_request = wait_for_stop(&mut stop) => {
-                    stop_request.map(|()| SessionOutcome::StopRequested)
+                    break stop_request.map(|()| SessionOutcome::StopRequested);
                 }
             }
         };
@@ -131,6 +132,30 @@ impl Session {
     fn transition(&mut self, state: SessionState) {
         println!("Session state: {} -> {state}", self.state);
         self.state = state;
+    }
+}
+
+async fn handle_guide_event(input: &InputPlumber, inventory: &Inventory, event: GuideEvent) {
+    match event.action {
+        GuideAction::MenuRequested => {
+            println!(
+                "VALIDATION: Guide press requested the system menu from {}.",
+                event.target
+            );
+        }
+        GuideAction::Released => {
+            println!("Guide released by {}.", event.target);
+            // Temporary until zaman-overlay owns the menu lifecycle. Without
+            // an overlay, restore gameplay input so validation cannot strand
+            // the controller in InputPlumber's ALL mode.
+            restore_gameplay_input(input, inventory).await;
+        }
+    }
+}
+
+async fn restore_gameplay_input(input: &InputPlumber, inventory: &Inventory) {
+    if let Err(error) = input.set_intercept_mode(inventory, INTERCEPT_PASS).await {
+        eprintln!("Unable to restore gameplay input after Guide release: {error}");
     }
 }
 

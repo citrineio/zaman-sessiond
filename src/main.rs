@@ -3,6 +3,7 @@ mod command;
 mod contract;
 mod daemon;
 mod error;
+mod guide;
 mod inputplumber;
 mod registry;
 mod session;
@@ -26,7 +27,7 @@ async fn main() -> Result<()> {
     let status = SharedStatus::new();
     let (commands, receiver) = mpsc::channel(8);
     let api = SessionApi::new(registry, status.clone(), commands.clone());
-    let connection = Builder::session()?
+    let _connection = Builder::session()?
         .serve_at(PATH, api)?
         .name(SERVICE)?
         .build()
