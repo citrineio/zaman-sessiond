@@ -27,8 +27,24 @@ Methods:
 
 - `Launch(system_id, rom_path)` resolves and starts a registered emulator.
 - `Stop()` idempotently requests termination of the active game session.
+- `Resume()` closes an open system menu and returns controller input to the game.
+- `ExitGame()` accepts the system menu's explicit exit selection.
 - `Status()` reports state, selected system/emulator/ROM, result, and error.
+- `MenuStatus()` reports whether the menu is open, its generation, and the last
+  transition reason.
 - `Version()` returns the interface implementation version.
+
+Signals:
+
+- `MenuOpened(generation, reason)` tells a shell to present its system menu.
+- `MenuClosed(generation, reason)` tells the shell to dismiss that menu.
+- `MenuInput(generation, event, value)` forwards normalized InputPlumber `ui_*`
+  events while the menu owns controller input.
+
+The generation monotonically identifies each menu opening. A shell reads
+`MenuStatus()` when it starts, subscribes to the signals, and ignores input from
+an obsolete generation. Pegasus, another frontend, or a standalone overlay can
+implement this client without direct system-bus or controller access.
 
 The canonical introspection contract is in
 `interfaces/com.kawnelectro.Zaman.Session1.xml`.
@@ -76,21 +92,16 @@ No username, controller model, VID/PID, event node, or composite index is part
 of the sessiond contract. Guide is reserved by setting InputPlumber PASS mode;
 cleanup restores NONE after D-Bus Stop, natural exit, or handled errors.
 
-The current Guide gesture implementation is deliberately non-destructive while
-the system menu and power broker are unfinished:
+One Guide press opens the system menu immediately. sessiond explicitly places
+all discovered composites in InputPlumber ALL mode, retains ownership after the
+button is released, and forwards normalized menu input over the user D-Bus.
+`Resume()` restores PASS and closes the menu. `ExitGame()` closes the menu and
+ends the supervised transient unit. Natural game exit and errors close stale
+menu state during cleanup.
 
-- releasing before three seconds requests no system action and restores PASS;
-- three seconds emits and logs a system-menu validation event;
-- releasing a long hold restores PASS;
-- the validation event does not stop the game or change system power state.
-
-Guide holds beyond this threshold are deliberately not part of the contract.
-Some controllers, including the current bench controller, power themselves off
-after roughly five seconds. Shutdown therefore belongs in the system menu and
-must not depend on a longer Guide hold.
-
-This establishes and bench-qualifies gesture timing without allowing unfinished
-menu or shutdown paths to affect a running game.
+No long-hold action exists. Some controllers use a Guide hold for firmware
+power-off, so shutdown must be selected from the visible system menu instead of
+depending on controller-specific timing.
 
 ## State model
 
@@ -102,7 +113,8 @@ Idle -> Active -> Stopping -> Idle
 ```
 
 The internal game session retains the finer-grained
-`Idle -> Starting -> Running -> Stopping` transitions in its journal.
+`Idle -> Starting -> Running -> MenuOpen -> Running/Stopping` transitions in
+its journal. Menu state is separately observable through `MenuStatus()`.
 
 ## Build and bench validation
 
@@ -115,17 +127,19 @@ starts an isolated daemon against temporary registry data, introspects the
 D-Bus API, verifies a natural exit, and verifies an explicit `zamanctl stop`
 terminates the entire transient unit and restores input interception.
 
-With a controller connected, the non-destructive Guide thresholds can be
-validated interactively:
+With a controller connected, the menu lifecycle can be validated interactively:
 
 ```bash
 ./tools/guide-validation.sh
 ```
 
-The validator asks for a short press and a three-to-four-second hold. It verifies
-the expected event after each gesture and verifies that the supervised test game
-remains active. It uses a synthetic supervised process and does not qualify
-MesenCE or any other production emulator.
+After `smoke-test.sh` has just built and tested the same tree, avoid repeating
+that work with `ZAMAN_SKIP_BUILD=1 ./tools/guide-validation.sh`.
+
+The validator asks for two ordinary Guide presses. It verifies Guide-to-menu,
+retained ALL interception, Resume-to-PASS, and menu-selected ExitGame. It uses a
+synthetic supervised process and does not qualify MesenCE autosave or graceful
+termination.
 
 ## Distribution files
 
@@ -142,9 +156,12 @@ later Buildroot integration mechanical.
 
 - Install and validate the production user unit in the kiosk login session.
 - Add controller hotplug after a session has already started.
-- Connect the three-second Guide event to game freeze and the full-screen menu.
-- Add shutdown to the full-screen menu and qualify the physical power-key path.
-- Qualify MesenCE launch, natural exit, and explicit Stop as a production session.
+- Implement the full-screen menu renderer as a client of the v0.3 D-Bus contract.
+- Add suspend and shutdown through a polkit-governed power broker.
+- Add emulator lifecycle adapters before treating `ExitGame()` as production-safe;
+  the current bounded systemd stop path is validated only with synthetic games.
+- Qualify MesenCE launch, autosave, natural exit, and graceful exit as a
+  production session.
 - Add owned-key emulator configuration generation.
 - Replace path-based frontend launches with library game IDs when the Zaman
   library service becomes authoritative.

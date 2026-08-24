@@ -1,13 +1,18 @@
-use crate::contract::VERSION;
+use crate::error::{message, Result};
+use crate::menu::{MenuController, MenuEvent};
 use crate::registry::{Registry, ResolvedLaunch};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::mpsc;
-use zbus::{fdo, interface};
+use zaman_sessiond::contract::{INTERFACE, PATH, VERSION};
+use zbus::object_server::SignalEmitter;
+use zbus::{fdo, interface, Connection};
 
 #[derive(Clone, Debug)]
 pub enum ApiCommand {
     Launch(ResolvedLaunch),
     Stop,
+    Resume,
+    ExitGame,
     Shutdown,
 }
 
@@ -108,19 +113,80 @@ impl SharedStatus {
 pub struct SessionApi {
     registry: Arc<Registry>,
     status: SharedStatus,
+    menu: MenuController,
     commands: mpsc::Sender<ApiCommand>,
+}
+
+pub async fn publish_menu_events(
+    connection: Connection,
+    mut events: mpsc::UnboundedReceiver<MenuEvent>,
+) -> Result<()> {
+    let signal_emitter = SignalEmitter::new(&connection, PATH)?.into_owned();
+
+    while let Some(event) = events.recv().await {
+        match event {
+            MenuEvent::Opened(snapshot) => {
+                signal_emitter
+                    .emit(
+                        INTERFACE,
+                        "MenuOpened",
+                        &(snapshot.generation, snapshot.reason.as_str()),
+                    )
+                    .await?;
+            }
+            MenuEvent::Closed(snapshot) => {
+                signal_emitter
+                    .emit(
+                        INTERFACE,
+                        "MenuClosed",
+                        &(snapshot.generation, snapshot.reason.as_str()),
+                    )
+                    .await?;
+            }
+            MenuEvent::Input {
+                generation,
+                event,
+                value,
+            } => {
+                signal_emitter
+                    .emit(INTERFACE, "MenuInput", &(generation, event.as_str(), value))
+                    .await?;
+            }
+        }
+    }
+
+    Err(message("menu event publisher stopped"))
 }
 
 impl SessionApi {
     pub fn new(
         registry: Arc<Registry>,
         status: SharedStatus,
+        menu: MenuController,
         commands: mpsc::Sender<ApiCommand>,
     ) -> Self {
         Self {
             registry,
             status,
+            menu,
             commands,
+        }
+    }
+
+    async fn send_command(&self, command: ApiCommand) -> fdo::Result<()> {
+        self.commands
+            .send(command)
+            .await
+            .map_err(|_| fdo::Error::Failed("zaman-sessiond worker is unavailable".to_string()))
+    }
+
+    fn require_open_menu(&self) -> fdo::Result<()> {
+        if self.menu.snapshot().open {
+            Ok(())
+        } else {
+            Err(fdo::Error::Failed(
+                "the Zaman system menu is not open".to_string(),
+            ))
         }
     }
 }
@@ -150,10 +216,18 @@ impl SessionApi {
 
     async fn stop(&self) -> fdo::Result<()> {
         self.status.mark_stopping();
-        self.commands
-            .send(ApiCommand::Stop)
-            .await
-            .map_err(|_| fdo::Error::Failed("zaman-sessiond worker is unavailable".to_string()))
+        self.send_command(ApiCommand::Stop).await
+    }
+
+    async fn resume(&self) -> fdo::Result<()> {
+        self.require_open_menu()?;
+        self.send_command(ApiCommand::Resume).await
+    }
+
+    async fn exit_game(&self) -> fdo::Result<()> {
+        self.require_open_menu()?;
+        self.status.mark_stopping();
+        self.send_command(ApiCommand::ExitGame).await
     }
 
     #[zbus(out_args(
@@ -179,6 +253,34 @@ impl SessionApi {
     fn version(&self) -> &str {
         VERSION
     }
+
+    #[zbus(out_args("open", "generation", "reason"))]
+    fn menu_status(&self) -> (bool, u64, String) {
+        let menu = self.menu.snapshot();
+        (menu.open, menu.generation, menu.reason)
+    }
+
+    #[zbus(signal)]
+    async fn menu_opened(
+        signal_emitter: &SignalEmitter<'_>,
+        generation: u64,
+        reason: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn menu_closed(
+        signal_emitter: &SignalEmitter<'_>,
+        generation: u64,
+        reason: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn menu_input(
+        signal_emitter: &SignalEmitter<'_>,
+        generation: u64,
+        event: &str,
+        value: f64,
+    ) -> zbus::Result<()>;
 }
 
 #[cfg(test)]

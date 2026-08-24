@@ -1,22 +1,23 @@
 mod api;
 mod command;
-mod contract;
 mod daemon;
 mod error;
 mod guide;
 mod inputplumber;
+mod menu;
 mod registry;
 mod session;
 mod systemd;
 
-use crate::api::{ApiCommand, SessionApi, SharedStatus};
-use crate::contract::{PATH, SERVICE, VERSION};
+use crate::api::{publish_menu_events, ApiCommand, SessionApi, SharedStatus};
 use crate::daemon::{recover_runtime, run_worker};
 use crate::error::Result;
+use crate::menu::MenuController;
 use crate::registry::Registry;
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
+use zaman_sessiond::contract::{PATH, SERVICE, VERSION};
 use zbus::connection::Builder;
 
 #[tokio::main(flavor = "current_thread")]
@@ -25,9 +26,10 @@ async fn main() -> Result<()> {
     recover_runtime().await?;
 
     let status = SharedStatus::new();
+    let (menu, menu_events) = MenuController::new();
     let (commands, receiver) = mpsc::channel(8);
-    let api = SessionApi::new(registry, status.clone(), commands.clone());
-    let _connection = Builder::session()?
+    let api = SessionApi::new(registry, status.clone(), menu.clone(), commands.clone());
+    let connection = Builder::session()?
         .serve_at(PATH, api)?
         .name(SERVICE)?
         .build()
@@ -35,17 +37,22 @@ async fn main() -> Result<()> {
 
     println!("zaman-sessiond {VERSION} ready on {SERVICE} {PATH}");
 
-    let worker = run_worker(receiver, status);
+    let worker = run_worker(receiver, status, menu);
+    let menu_publisher = publish_menu_events(connection.clone(), menu_events);
     tokio::pin!(worker);
+    tokio::pin!(menu_publisher);
 
-    tokio::select! {
+    let trigger_result = tokio::select! {
         result = &mut worker => return result,
-        result = wait_for_shutdown_signal() => result?,
-    }
+        result = &mut menu_publisher => result,
+        result = wait_for_shutdown_signal() => result,
+    };
 
     println!("zaman-sessiond shutting down.");
     let _ = commands.send(ApiCommand::Shutdown).await;
-    worker.await
+    let worker_result = worker.await;
+    trigger_result?;
+    worker_result
 }
 
 async fn wait_for_shutdown_signal() -> Result<()> {

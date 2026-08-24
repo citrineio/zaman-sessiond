@@ -1,10 +1,11 @@
 use crate::api::{ApiCommand, SharedStatus};
 use crate::error::{message, Result};
 use crate::inputplumber::InputPlumber;
+use crate::menu::MenuController;
 use crate::registry::ResolvedLaunch;
-use crate::session::{Session, SessionOutcome};
+use crate::session::{Session, SessionControl, SessionOutcome};
 use crate::systemd::UserSystemd;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 pub async fn recover_runtime() -> Result<()> {
@@ -31,33 +32,45 @@ pub async fn recover_runtime() -> Result<()> {
 pub async fn run_worker(
     mut commands: mpsc::Receiver<ApiCommand>,
     status: SharedStatus,
+    menu: MenuController,
 ) -> Result<()> {
     let mut sessions: JoinSet<Result<SessionOutcome>> = JoinSet::new();
-    let mut active_stop: Option<watch::Sender<bool>> = None;
+    let mut active_control: Option<mpsc::Sender<SessionControl>> = None;
 
     loop {
         tokio::select! {
             command = commands.recv() => {
                 match command {
                     Some(ApiCommand::Launch(launch)) => {
-                        if active_stop.is_some() {
+                        if active_control.is_some() {
                             status.fail("worker received a second launch while active");
                             continue;
                         }
-                        let (stop_tx, stop_rx) = watch::channel(false);
-                        active_stop = Some(stop_tx);
-                        sessions.spawn(run_session(launch, stop_rx));
+                        let (control, controls) = mpsc::channel(8);
+                        active_control = Some(control);
+                        sessions.spawn(run_session(launch, controls, menu.clone()));
                     }
                     Some(ApiCommand::Stop) => {
-                        if let Some(stop) = &active_stop {
+                        if let Some(control) = &active_control {
                             status.mark_stopping();
-                            let _ = stop.send(true);
+                            let _ = control.send(SessionControl::Stop).await;
+                        }
+                    }
+                    Some(ApiCommand::Resume) => {
+                        if let Some(control) = &active_control {
+                            let _ = control.send(SessionControl::Resume).await;
+                        }
+                    }
+                    Some(ApiCommand::ExitGame) => {
+                        if let Some(control) = &active_control {
+                            status.mark_stopping();
+                            let _ = control.send(SessionControl::ExitGame).await;
                         }
                     }
                     Some(ApiCommand::Shutdown) | None => {
-                        if let Some(stop) = &active_stop {
+                        if let Some(control) = &active_control {
                             status.mark_stopping();
-                            let _ = stop.send(true);
+                            let _ = control.send(SessionControl::Stop).await;
                         }
                         while let Some(result) = sessions.join_next().await {
                             record_completion(&status, result);
@@ -70,7 +83,7 @@ pub async fn run_worker(
                 if let Some(result) = completed {
                     record_completion(&status, result);
                 }
-                active_stop = None;
+                active_control = None;
             }
         }
     }
@@ -78,7 +91,8 @@ pub async fn run_worker(
 
 async fn run_session(
     launch: ResolvedLaunch,
-    stop: watch::Receiver<bool>,
+    controls: mpsc::Receiver<SessionControl>,
+    menu: MenuController,
 ) -> Result<SessionOutcome> {
     println!(
         "Launching system={} emulator={} ({}) ROM={}",
@@ -94,8 +108,8 @@ async fn run_session(
         inventory.target_count()
     );
 
-    let mut session = Session::new(input, systemd, inventory);
-    session.run(&launch.command, stop).await
+    let mut session = Session::new(input, systemd, inventory, menu);
+    session.run(&launch.command, controls).await
 }
 
 fn record_completion(

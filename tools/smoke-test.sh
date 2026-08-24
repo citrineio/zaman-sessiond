@@ -15,9 +15,9 @@ cd "$REPO_DIR"
 echo "[1/8] Formatting and compiling"
 cargo fmt
 git diff --check
-cargo check --all-targets
-cargo test
-cargo build --bins
+cargo check --locked --all-targets
+cargo test --locked
+cargo build --locked --bins
 
 echo "[2/8] Checking service preconditions"
 if busctl --user --no-pager --no-legend list | awk -v service="$SERVICE" '$1 == service { found=1 } END { exit !found }'; then
@@ -33,7 +33,7 @@ if ! systemctl is-active --quiet inputplumber.service; then
     exit 1
 fi
 
-TEST_ROOT=$(mktemp -d /tmp/zaman-sessiond-v02.XXXXXX)
+TEST_ROOT=$(mktemp -d /tmp/zaman-sessiond-v03.XXXXXX)
 DAEMON_LOG="$TEST_ROOT/daemon.log"
 FAST_LOG="$TEST_ROOT/fast.log"
 SLOW_LOG="$TEST_ROOT/slow.log"
@@ -140,15 +140,24 @@ if ! INTROSPECTION=$(busctl --user introspect "$SERVICE" "$PATH_OBJECT" "$INTERF
     cat "$DAEMON_LOG"
     exit 1
 fi
-for member in Launch Status Stop Version; do
+for member in ExitGame Launch MenuClosed MenuInput MenuOpened MenuStatus Resume Status Stop Version; do
     if ! printf '%s\n' "$INTROSPECTION" | grep -Fq ".$member"; then
         echo "FAIL: D-Bus member $member is missing"
         printf '%s\n' "$INTROSPECTION"
         exit 1
     fi
 done
-if [ "$("$CTL" version)" != "0.2.0" ]; then
+if [ "$("$CTL" version)" != "0.3.0" ]; then
     echo "FAIL: wrong zaman-sessiond version"
+    exit 1
+fi
+if ! "$CTL" menu-status | grep -Fq "menu=closed"; then
+    echo "FAIL: initial menu state is not closed"
+    "$CTL" menu-status
+    exit 1
+fi
+if "$CTL" resume >/dev/null 2>&1; then
+    echo "FAIL: Resume succeeded while the menu was closed"
     exit 1
 fi
 
@@ -225,4 +234,4 @@ DAEMON_PID=""
 OWNS_TEST_UNIT=0
 
 cat "$DAEMON_LOG"
-echo "PASS: zaman-sessiond v0.2 D-Bus and registry smoke test"
+echo "PASS: zaman-sessiond v0.3 D-Bus, menu contract, and registry smoke test"

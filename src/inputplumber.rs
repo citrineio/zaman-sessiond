@@ -14,6 +14,7 @@ const DBUS_DEVICE_INTERFACE: &str = "org.shadowblip.Input.DBusDevice";
 
 pub const INTERCEPT_NONE: u32 = 0;
 pub const INTERCEPT_PASS: u32 = 1;
+pub const INTERCEPT_ALL: u32 = 2;
 
 #[derive(Clone, Debug)]
 struct Composite {
@@ -45,31 +46,31 @@ pub struct InputPlumber {
     connection: Connection,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GuideEvent {
-    pub target: String,
-    pub action: GuideAction,
+#[derive(Clone, Debug, PartialEq)]
+pub enum SystemInputEvent {
+    Guide { target: String, action: GuideAction },
+    MenuInput { event: String, value: f64 },
 }
 
-pub struct GuideMonitor {
-    receiver: mpsc::Receiver<GuideEvent>,
+pub struct SystemInputMonitor {
+    receiver: mpsc::Receiver<SystemInputEvent>,
     listeners: JoinSet<()>,
 }
 
-impl GuideMonitor {
-    pub async fn next(&mut self) -> GuideEvent {
+impl SystemInputMonitor {
+    pub async fn next(&mut self) -> SystemInputEvent {
         if let Some(event) = self.receiver.recv().await {
             return event;
         }
 
         eprintln!(
-            "All InputPlumber event listeners stopped; continuing without Guide supervision."
+            "All InputPlumber event listeners stopped; continuing without system input supervision."
         );
-        std::future::pending::<GuideEvent>().await
+        std::future::pending::<SystemInputEvent>().await
     }
 }
 
-impl Drop for GuideMonitor {
+impl Drop for SystemInputMonitor {
     fn drop(&mut self) {
         self.listeners.abort_all();
     }
@@ -169,8 +170,8 @@ impl InputPlumber {
         Ok(())
     }
 
-    pub fn monitor_guide(&self, inventory: &Inventory) -> GuideMonitor {
-        let (sender, receiver) = mpsc::channel(16);
+    pub fn monitor_system_input(&self, inventory: &Inventory) -> SystemInputMonitor {
+        let (sender, receiver) = mpsc::channel(64);
         let mut listeners = JoinSet::new();
 
         if !inventory.has_system_input() {
@@ -184,7 +185,9 @@ impl InputPlumber {
                 let sender = sender.clone();
 
                 listeners.spawn(async move {
-                    if let Err(error) = monitor_guide_target(connection, target, sender).await {
+                    if let Err(error) =
+                        monitor_system_input_target(connection, target, sender).await
+                    {
                         eprintln!("Input listener failed: {error}");
                     }
                 });
@@ -192,17 +195,17 @@ impl InputPlumber {
         }
 
         drop(sender);
-        GuideMonitor {
+        SystemInputMonitor {
             receiver,
             listeners,
         }
     }
 }
 
-async fn monitor_guide_target(
+async fn monitor_system_input_target(
     connection: Connection,
     target: String,
-    sender: mpsc::Sender<GuideEvent>,
+    sender: mpsc::Sender<SystemInputEvent>,
 ) -> Result<()> {
     let proxy = Proxy::new(&connection, SERVICE, target.as_str(), DBUS_DEVICE_INTERFACE).await?;
     let mut events = proxy.receive_signal("InputEvent").await?;
@@ -213,31 +216,38 @@ async fn monitor_guide_target(
     while let Some(signal) = events.next().await {
         let (event, value): (String, f64) = signal.body().deserialize()?;
 
-        if event != "ui_guide" {
+        if !event.starts_with("ui_") {
             continue;
         }
 
-        let actions = if value > 0.5 {
-            guide.press()
-        } else {
-            guide.release()
-        };
+        if event == "ui_guide" {
+            let actions = if value > 0.5 {
+                guide.press()
+            } else {
+                guide.release()
+            };
 
-        if !send_actions(&sender, &target, actions).await {
-            return Ok(());
+            if !send_guide_actions(&sender, &target, actions).await {
+                return Ok(());
+            }
+        } else {
+            let input = SystemInputEvent::MenuInput { event, value };
+            if sender.send(input).await.is_err() {
+                return Ok(());
+            }
         }
     }
 
     Err(message(format!("D-Bus event stream closed: {target}")))
 }
 
-async fn send_actions(
-    sender: &mpsc::Sender<GuideEvent>,
+async fn send_guide_actions(
+    sender: &mpsc::Sender<SystemInputEvent>,
     target: &str,
     actions: Vec<GuideAction>,
 ) -> bool {
     for action in actions {
-        let event = GuideEvent {
+        let event = SystemInputEvent::Guide {
             target: target.to_string(),
             action,
         };

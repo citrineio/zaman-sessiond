@@ -10,13 +10,17 @@ UNIT="zaman-game.service"
 
 cd "$REPO_DIR"
 
-echo "[1/4] Building Guide validation binaries"
-cargo fmt
-git diff --check
-cargo test
-cargo build --bins
+echo "[1/5] Building Guide validation binaries"
+if [ "${ZAMAN_SKIP_BUILD:-0}" = "1" ]; then
+    echo "Using binaries already qualified by the smoke test"
+else
+    cargo fmt
+    git diff --check
+    cargo test --locked
+    cargo build --locked --bins
+fi
 
-echo "[2/4] Checking validation preconditions"
+echo "[2/5] Checking validation preconditions"
 if busctl --user --no-pager --no-legend list |
     awk -v service="$SERVICE" '$1 == service { found=1 } END { exit !found }'; then
     echo "FAIL: $SERVICE is already owned"
@@ -78,7 +82,7 @@ priority = 100
 argv = ["/usr/bin/sleep", "infinity"]
 EOF
 
-echo "[3/4] Starting isolated daemon and supervised test game"
+echo "[3/5] Starting isolated daemon and supervised test game"
 ZAMAN_REGISTRY_DIRS="$TEST_ROOT" "$DAEMON" >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 
@@ -153,7 +157,7 @@ wait_for_new_log() {
     return 1
 }
 
-echo "[4/4] Press and release Guide once"
+echo "[4/5] Press and release Guide once, then wait for Resume"
 first_line=$(( $(wc -l <"$DAEMON_LOG") + 1 ))
 if ! wait_for_new_log "Guide press requested the system menu" "$first_line"; then
     echo "FAIL: Guide press did not request the system menu"
@@ -161,25 +165,84 @@ if ! wait_for_new_log "Guide press requested the system menu" "$first_line"; the
     exit 1
 fi
 echo "MENU REQUEST RECEIVED"
-if ! wait_for_new_log "Guide released" "$first_line"; then
+if ! wait_for_new_log "menu lifecycle retains input ownership" "$first_line"; then
     echo "FAIL: Guide release was not observed"
     cat "$DAEMON_LOG"
     exit 1
 fi
-if ! systemctl --user is-active --quiet "$UNIT"; then
-    echo "FAIL: Guide press stopped the game"
+if ! "$CTL" menu-status | grep -Fq "menu=open"; then
+    echo "FAIL: D-Bus menu state did not become open"
+    "$CTL" menu-status
     exit 1
 fi
-echo "PASS: Guide press requested the menu and game remained active"
+if ! tail -n +"$first_line" "$DAEMON_LOG" | grep -Fq "InterceptMode to 2"; then
+    echo "FAIL: system menu did not retain InputPlumber ALL mode"
+    cat "$DAEMON_LOG"
+    exit 1
+fi
 
-"$CTL" stop
+echo "Press the controller's primary accept button once"
+if ! wait_for_new_log "System menu input event=ui_accept" "$first_line"; then
+    echo "FAIL: normalized ui_accept was not forwarded while the menu was open"
+    cat "$DAEMON_LOG"
+    exit 1
+fi
+echo "MENU INPUT RECEIVED"
+
+"$CTL" resume
+if ! wait_for_new_log "System menu resumed the game" "$first_line"; then
+    echo "FAIL: Resume was not observed"
+    cat "$DAEMON_LOG"
+    exit 1
+fi
+if ! "$CTL" menu-status | grep -Fq "menu=closed"; then
+    echo "FAIL: D-Bus menu state did not close after Resume"
+    "$CTL" menu-status
+    exit 1
+fi
+if ! systemctl --user is-active --quiet "$UNIT"; then
+    echo "FAIL: Resume stopped the game"
+    exit 1
+fi
+echo "PASS: Guide opened the menu; Resume restored gameplay"
+
+echo "[5/5] Press and release Guide once, then wait for ExitGame"
+first_line=$(( $(wc -l <"$DAEMON_LOG") + 1 ))
+if ! wait_for_new_log "Guide press requested the system menu" "$first_line"; then
+    echo "FAIL: second Guide press did not request the system menu"
+    cat "$DAEMON_LOG"
+    exit 1
+fi
+if ! wait_for_new_log "menu lifecycle retains input ownership" "$first_line"; then
+    echo "FAIL: second Guide release was not observed"
+    cat "$DAEMON_LOG"
+    exit 1
+fi
+if ! "$CTL" menu-status | grep -Fq "menu=open"; then
+    echo "FAIL: menu did not reopen"
+    "$CTL" menu-status
+    exit 1
+fi
+
+"$CTL" exit-game
 wait "$CLIENT_PID"
 CLIENT_PID=""
 
 if systemctl --user is-active --quiet "$UNIT"; then
-    echo "FAIL: $UNIT remained active after validation cleanup"
+    echo "FAIL: $UNIT remained active after ExitGame"
     exit 1
 fi
+if ! "$CTL" status | grep -Fq "result=exit requested from the system menu"; then
+    echo "FAIL: ExitGame result was not recorded"
+    "$CTL" status
+    exit 1
+fi
+if ! "$CTL" menu-status | grep -Fq "menu=closed"; then
+    echo "FAIL: menu remained open after ExitGame"
+    "$CTL" menu-status
+    exit 1
+fi
+echo "PASS: menu-selected ExitGame stopped the supervised test game"
 
 kill -TERM "$DAEMON_PID"
 wait "$DAEMON_PID"
@@ -187,4 +250,4 @@ DAEMON_PID=""
 OWNS_TEST_UNIT=0
 
 cat "$DAEMON_LOG"
-echo "PASS: Guide press validation completed"
+echo "PASS: Guide menu lifecycle validation completed"
