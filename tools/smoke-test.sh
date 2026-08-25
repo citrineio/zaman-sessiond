@@ -33,7 +33,7 @@ if ! systemctl is-active --quiet inputplumber.service; then
     exit 1
 fi
 
-TEST_ROOT=$(mktemp -d /tmp/zaman-sessiond-v03.XXXXXX)
+TEST_ROOT=$(mktemp -d /tmp/zaman-sessiond-v04.XXXXXX)
 DAEMON_LOG="$TEST_ROOT/daemon.log"
 FAST_LOG="$TEST_ROOT/fast.log"
 SLOW_LOG="$TEST_ROOT/slow.log"
@@ -147,7 +147,7 @@ for member in ExitGame Launch MenuClosed MenuInput MenuOpened MenuStatus Resume 
         exit 1
     fi
 done
-if [ "$("$CTL" version)" != "0.3.0" ]; then
+if [ "$("$CTL" version)" != "0.4.0" ]; then
     echo "FAIL: wrong zaman-sessiond version"
     exit 1
 fi
@@ -234,4 +234,4 @@ DAEMON_PID=""
 OWNS_TEST_UNIT=0
 
 cat "$DAEMON_LOG"
-echo "PASS: zaman-sessiond v0.3 D-Bus, menu contract, and registry smoke test"
+echo "PASS: zaman-sessiond v0.4 D-Bus, menu contract, and registry smoke test"

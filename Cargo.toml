@@ -1,6 +1,6 @@
 [package]
 name = "zaman-sessiond"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.85"
 resolver = "3"
@@ -8,6 +8,7 @@ resolver = "3"
 [dependencies]
 futures-util = "=0.3.31"
 serde = { version = "=1.0.229", features = ["derive"] }
+sdl2 = { version = "=0.37.0", default-features = false, features = ["ttf", "use-pkgconfig"] }
 tokio = { version = "=1.43.0", features = ["macros", "rt", "signal", "sync", "time"] }
 toml = { version = "=0.8.23", default-features = false, features = ["parse"] }
 zbus = { version = "=5.5.0", default-features = false, features = ["tokio"] }

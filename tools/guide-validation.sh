@@ -5,6 +5,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DAEMON="$REPO_DIR/target/debug/zaman-sessiond"
 CTL="$REPO_DIR/target/debug/zamanctl"
+MENU="$REPO_DIR/target/debug/zaman-menu"
 SERVICE="com.kawnelectro.Zaman.Session1"
 UNIT="zaman-game.service"
 
@@ -35,18 +36,44 @@ if ! systemctl is-active --quiet inputplumber.service; then
     exit 1
 fi
 
+USER_ENVIRONMENT=$(systemctl --user show-environment)
+SESSION_WAYLAND_DISPLAY=$(
+    printf '%s\n' "$USER_ENVIRONMENT" |
+        sed -n 's/^WAYLAND_DISPLAY=//p' |
+        tail -n 1
+)
+SESSION_XDG_RUNTIME_DIR=$(
+    printf '%s\n' "$USER_ENVIRONMENT" |
+        sed -n 's/^XDG_RUNTIME_DIR=//p' |
+        tail -n 1
+)
+if [ -z "$SESSION_WAYLAND_DISPLAY" ] || [ -z "$SESSION_XDG_RUNTIME_DIR" ]; then
+    echo "FAIL: the user manager has no active Zaman Wayland session"
+    exit 1
+fi
+if [ ! -S "$SESSION_XDG_RUNTIME_DIR/$SESSION_WAYLAND_DISPLAY" ]; then
+    echo "FAIL: the imported Wayland socket does not exist"
+    exit 1
+fi
+
 TEST_ROOT=$(mktemp -d /tmp/zaman-guide-validation.XXXXXX)
 DAEMON_LOG="$TEST_ROOT/daemon.log"
 CLIENT_LOG="$TEST_ROOT/client.log"
+MENU_LOG="$TEST_ROOT/menu.log"
 ROM_DIR="$TEST_ROOT/roms"
 DAEMON_PID=""
 CLIENT_PID=""
+MENU_PID=""
 OWNS_TEST_UNIT=0
 
 cleanup() {
     if [ -n "$CLIENT_PID" ] && kill -0 "$CLIENT_PID" 2>/dev/null; then
         "$CTL" stop >/dev/null 2>&1 || true
         wait "$CLIENT_PID" 2>/dev/null || true
+    fi
+    if [ -n "$MENU_PID" ] && kill -0 "$MENU_PID" 2>/dev/null; then
+        kill -TERM "$MENU_PID" 2>/dev/null || true
+        wait "$MENU_PID" 2>/dev/null || true
     fi
     if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
         kill -TERM "$DAEMON_PID" 2>/dev/null || true
@@ -109,6 +136,33 @@ if [ "$SERVICE_READY" -ne 1 ]; then
     exit 1
 fi
 
+WAYLAND_DISPLAY="$SESSION_WAYLAND_DISPLAY" \
+XDG_RUNTIME_DIR="$SESSION_XDG_RUNTIME_DIR" \
+XDG_SESSION_TYPE=wayland \
+DBUS_SESSION_BUS_ADDRESS="unix:path=$SESSION_XDG_RUNTIME_DIR/bus" \
+SDL_VIDEODRIVER=wayland \
+    "$MENU" >"$MENU_LOG" 2>&1 &
+MENU_PID=$!
+
+attempt=0
+while [ "$attempt" -lt 100 ]; do
+    if grep -Fq "zaman-menu ready" "$MENU_LOG"; then
+        break
+    fi
+    if ! kill -0 "$MENU_PID" 2>/dev/null; then
+        echo "FAIL: zaman-menu exited during startup"
+        cat "$MENU_LOG"
+        exit 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+if ! grep -Fq "zaman-menu ready" "$MENU_LOG"; then
+    echo "FAIL: zaman-menu did not become ready"
+    cat "$MENU_LOG"
+    exit 1
+fi
+
 "$CTL" launch guide "$ROM_DIR/Guide Validation.guide" >"$CLIENT_LOG" 2>&1 &
 CLIENT_PID=$!
 OWNS_TEST_UNIT=1
@@ -157,14 +211,42 @@ wait_for_new_log() {
     return 1
 }
 
-echo "[4/5] Press and release Guide once, then wait for Resume"
+wait_for_new_menu_log() {
+    pattern=$1
+    first_line=$2
+    attempt=0
+    while [ "$attempt" -lt 600 ]; do
+        if tail -n +"$first_line" "$MENU_LOG" | grep -Fq "$pattern"; then
+            return 0
+        fi
+        if ! kill -0 "$MENU_PID" 2>/dev/null; then
+            echo "FAIL: zaman-menu exited during validation"
+            return 1
+        fi
+        if ! systemctl --user is-active --quiet "$UNIT"; then
+            echo "FAIL: game unit exited during menu validation"
+            return 1
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    return 1
+}
+
+echo "[4/5] Press and release Guide once"
 first_line=$(( $(wc -l <"$DAEMON_LOG") + 1 ))
+menu_first_line=$(( $(wc -l <"$MENU_LOG") + 1 ))
 if ! wait_for_new_log "Guide press requested the system menu" "$first_line"; then
     echo "FAIL: Guide press did not request the system menu"
     cat "$DAEMON_LOG"
     exit 1
 fi
 echo "MENU REQUEST RECEIVED"
+if ! wait_for_new_menu_log "Opening menu generation=" "$menu_first_line"; then
+    echo "FAIL: zaman-menu did not create its full-screen surface"
+    cat "$MENU_LOG"
+    exit 1
+fi
 if ! wait_for_new_log "menu lifecycle retains input ownership" "$first_line"; then
     echo "FAIL: Guide release was not observed"
     cat "$DAEMON_LOG"
@@ -181,15 +263,12 @@ if ! tail -n +"$first_line" "$DAEMON_LOG" | grep -Fq "InterceptMode to 2"; then
     exit 1
 fi
 
-echo "Press the controller's primary accept button once"
-if ! wait_for_new_log "System menu input event=ui_accept" "$first_line"; then
-    echo "FAIL: normalized ui_accept was not forwarded while the menu was open"
-    cat "$DAEMON_LOG"
+echo "Resume is selected. Confirm that the menu is visible, then press the controller's primary accept button once."
+if ! wait_for_new_menu_log "Activating Resume" "$menu_first_line"; then
+    echo "FAIL: zaman-menu did not activate Resume"
+    cat "$MENU_LOG"
     exit 1
 fi
-echo "MENU INPUT RECEIVED"
-
-"$CTL" resume
 if ! wait_for_new_log "System menu resumed the game" "$first_line"; then
     echo "FAIL: Resume was not observed"
     cat "$DAEMON_LOG"
@@ -206,8 +285,9 @@ if ! systemctl --user is-active --quiet "$UNIT"; then
 fi
 echo "PASS: Guide opened the menu; Resume restored gameplay"
 
-echo "[5/5] Press and release Guide once, then wait for ExitGame"
+echo "[5/5] Press and release Guide once"
 first_line=$(( $(wc -l <"$DAEMON_LOG") + 1 ))
+menu_first_line=$(( $(wc -l <"$MENU_LOG") + 1 ))
 if ! wait_for_new_log "Guide press requested the system menu" "$first_line"; then
     echo "FAIL: second Guide press did not request the system menu"
     cat "$DAEMON_LOG"
@@ -224,7 +304,17 @@ if ! "$CTL" menu-status | grep -Fq "menu=open"; then
     exit 1
 fi
 
-"$CTL" exit-game
+if ! wait_for_new_menu_log "Opening menu generation=" "$menu_first_line"; then
+    echo "FAIL: zaman-menu did not reopen its full-screen surface"
+    cat "$MENU_LOG"
+    exit 1
+fi
+echo "Press Down once to select Exit Game, then press the controller's primary accept button once."
+if ! wait_for_new_menu_log "Activating ExitGame" "$menu_first_line"; then
+    echo "FAIL: zaman-menu did not activate Exit Game"
+    cat "$MENU_LOG"
+    exit 1
+fi
 wait "$CLIENT_PID"
 CLIENT_PID=""
 
@@ -244,10 +334,14 @@ if ! "$CTL" menu-status | grep -Fq "menu=closed"; then
 fi
 echo "PASS: menu-selected ExitGame stopped the supervised test game"
 
+kill -TERM "$MENU_PID"
+wait "$MENU_PID" 2>/dev/null || true
+MENU_PID=""
 kill -TERM "$DAEMON_PID"
 wait "$DAEMON_PID"
 DAEMON_PID=""
 OWNS_TEST_UNIT=0
 
+cat "$MENU_LOG"
 cat "$DAEMON_LOG"
-echo "PASS: Guide menu lifecycle validation completed"
+echo "PASS: full-screen Guide menu validation completed"

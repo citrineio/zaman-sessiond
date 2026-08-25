@@ -46,6 +46,32 @@ The generation monotonically identifies each menu opening. A shell reads
 an obsolete generation. Pegasus, another frontend, or a standalone overlay can
 implement this client without direct system-bus or controller access.
 
+## Full-screen menu client
+
+`zaman-menu` is the reference standalone client for this contract. It stays
+connected to the user D-Bus without creating a window. `MenuOpened` creates a
+native Wayland SDL2 desktop-fullscreen surface above the current Cage client;
+`MenuClosed` destroys the surface so the still-running game becomes visible
+again. It does not open evdev, identify controllers, or depend on ES-DE or
+Pegasus.
+
+The first visual milestone exposes the two actions already implemented safely
+by the v0.3 session contract:
+
+- Resume
+- Exit Game
+
+Normalized `ui_up`, `ui_down`, `ui_left`, `ui_right`, `ui_accept`, `ui_back`,
+and `ui_cancel` events drive the menu. Repeated press events are suppressed
+until their matching release. Keyboard navigation remains available for bench
+recovery. Sleep and Power Off are intentionally not fake menu entries; they
+will be added after the polkit-governed power broker owns those operations.
+
+The renderer uses SDL2 and SDL2_ttf. `ZAMAN_MENU_FONT` can name an explicit
+font; otherwise the client checks packaged Noto Sans and DejaVu Sans paths.
+The production image should install one known font and set the environment in
+`zaman-menu.service` if its path differs.
+
 The canonical introspection contract is in
 `interfaces/com.kawnelectro.Zaman.Session1.xml`.
 
@@ -133,17 +159,23 @@ With a controller connected, the menu lifecycle can be validated interactively:
 ./tools/guide-validation.sh
 ```
 
-After `smoke-test.sh` has just built and tested the same tree, avoid repeating
-that work with `ZAMAN_SKIP_BUILD=1 ./tools/guide-validation.sh`.
+The graphical session must already have imported `WAYLAND_DISPLAY` and
+`XDG_RUNTIME_DIR` into the user systemd manager. After `smoke-test.sh` has just
+built and tested the same tree, avoid repeating that work with
+`ZAMAN_SKIP_BUILD=1 ./tools/guide-validation.sh`.
 
-The validator asks for two ordinary Guide presses. It verifies Guide-to-menu,
-retained ALL interception, Resume-to-PASS, and menu-selected ExitGame. It uses a
-synthetic supervised process and does not qualify MesenCE autosave or graceful
-termination.
+The validator starts the real `zaman-menu` binary and asks for two ordinary
+Guide presses. On the first menu, the controller's normalized primary accept
+action selects Resume. On the second, Down followed by the primary accept
+action selects Exit Game. It verifies the visible full-screen surface,
+Guide-to-menu, retained ALL interception, Resume-to-PASS, and menu-selected
+ExitGame. It uses a synthetic supervised process and does not qualify MesenCE
+autosave or graceful termination.
 
 ## Distribution files
 
 - `dist/systemd/user/zaman-sessiond.service`
+- `dist/systemd/user/zaman-menu.service`
 - `dist/dbus-1/services/com.kawnelectro.Zaman.Session1.service`
 - `interfaces/com.kawnelectro.Zaman.Session1.xml`
 - `registry/`
@@ -154,9 +186,8 @@ later Buildroot integration mechanical.
 
 ## Remaining work
 
-- Install and validate the production user unit in the kiosk login session.
+- Install and validate the production user units in the kiosk login session.
 - Add controller hotplug after a session has already started.
-- Implement the full-screen menu renderer as a client of the v0.3 D-Bus contract.
 - Add suspend and shutdown through a polkit-governed power broker.
 - Add emulator lifecycle adapters before treating `ExitGame()` as production-safe;
   the current bounded systemd stop path is validated only with synthetic games.
