@@ -13,7 +13,8 @@ pub enum ApiCommand {
     Stop,
     Resume,
     ExitGame,
-    Shutdown,
+    Shutdown, // power off the SYSTEM via logind
+    Quit,     // shut down the DAEMON only
 }
 
 #[derive(Clone, Debug)]
@@ -228,6 +229,13 @@ impl SessionApi {
         self.require_open_menu()?;
         self.status.mark_stopping();
         self.send_command(ApiCommand::ExitGame).await
+    }
+
+    async fn shutdown(&self) -> fdo::Result<()> {
+        // No require_open_menu(): shutdown must also work from the
+        // frontend when no game is running (idle power-off).
+        self.status.mark_stopping();
+        self.send_command(ApiCommand::Shutdown).await
     }
 
     #[zbus(out_args(

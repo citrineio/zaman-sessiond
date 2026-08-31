@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     };
 
     println!("zaman-sessiond shutting down.");
-    let _ = commands.send(ApiCommand::Shutdown).await;
+    let _ = commands.send(ApiCommand::Quit).await;
     let worker_result = worker.await;
     trigger_result?;
     worker_result

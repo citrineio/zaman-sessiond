@@ -30,6 +30,7 @@ pub enum SessionOutcome {
     GameExited,
     StopRequested,
     ExitGameRequested,
+    ShutdownRequested,
 }
 
 impl fmt::Display for SessionOutcome {
@@ -38,6 +39,9 @@ impl fmt::Display for SessionOutcome {
             Self::GameExited => write!(formatter, "game exited normally"),
             Self::StopRequested => write!(formatter, "stop requested by the session service"),
             Self::ExitGameRequested => write!(formatter, "exit requested from the system menu"),
+            Self::ShutdownRequested => {
+                write!(formatter, "shutdown requested from the system menu")
+            }
         }
     }
 }
@@ -47,6 +51,7 @@ pub enum SessionControl {
     Stop,
     Resume,
     ExitGame,
+    Shutdown,
 }
 
 pub struct Session {
@@ -138,6 +143,10 @@ impl Session {
                         Some(SessionControl::ExitGame) => {
                             self.menu.close("exit-game");
                             break Ok(SessionOutcome::ExitGameRequested);
+                        }
+                        Some(SessionControl::Shutdown) => {
+                            self.menu.close("shutdown");
+                            break Ok(SessionOutcome::ShutdownRequested);
                         }
                         Some(SessionControl::Stop) | None => {
                             self.menu.close("session-stop");

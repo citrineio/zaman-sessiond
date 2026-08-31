@@ -67,7 +67,20 @@ pub async fn run_worker(
                             let _ = control.send(SessionControl::ExitGame).await;
                         }
                     }
-                    Some(ApiCommand::Shutdown) | None => {
+                    Some(ApiCommand::Shutdown) => {
+                        match &active_control {
+                            // Game running: graceful exit first; PowerOff
+                            // fires in the completion branch below once the
+                            // session reports ShutdownRequested.
+                            Some(control) => {
+                                status.mark_stopping();
+                                let _ = control.send(SessionControl::Shutdown).await;
+                            }
+                            // Idle: nothing to save, power off immediately.
+                            None => power_off().await,
+                        }
+                    }
+                    Some(ApiCommand::Quit) | None => {
                         if let Some(control) = &active_control {
                             status.mark_stopping();
                             let _ = control.send(SessionControl::Stop).await;
@@ -81,9 +94,13 @@ pub async fn run_worker(
             }
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 if let Some(result) = completed {
+                    let shutdown = matches!(result, Ok(Ok(SessionOutcome::ShutdownRequested)));
                     record_completion(&status, result);
+                    active_control = None;
+                    if shutdown {
+                        power_off().await;
+                    }
                 }
-                active_control = None;
             }
         }
     }
@@ -130,5 +147,26 @@ fn record_completion(
             eprintln!("{error}");
             status.fail(error.to_string());
         }
+    }
+}
+
+/// Powers the system off through logind so polkit policy applies and
+/// systemd performs the full unmount+sync teardown. Failure is logged and
+/// the daemon keeps running — the game is already safely exited by then.
+async fn power_off() {
+    async fn inner() -> zbus::Result<()> {
+        let connection = zbus::Connection::system().await?;
+        let proxy = zbus::Proxy::new(
+            &connection,
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+        )
+        .await?;
+        proxy.call::<_, _, ()>("PowerOff", &(true)).await
+    }
+
+    if let Err(error) = inner().await {
+        eprintln!("System power-off failed: {error}");
     }
 }
