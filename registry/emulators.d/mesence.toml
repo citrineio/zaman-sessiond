@@ -5,20 +5,27 @@ id = "mesence"
 name = "Mesen Community Edition"
 version = "2.2.1"
 systems = ["nes"]
-priority = 100
+priority = 200
 
 [emulator.license]
 spdx = "GPL-3.0-or-later"
 source_url = "https://github.com/nesdev-org/MesenCE"
-patches = []
+patches = [
+  "patches/mesence/2.2.1/0001-preserve-process-for-graceful-sigint.patch",
+]
 
 [emulator.exec]
 argv = [
   "/usr/lib/zaman/emulators/mesence/Mesen",
   "--fullscreen",
+  "--loadLastSession",
   "{rom.path}",
 ]
 needs = ["gpu", "audio", "xwayland"]
+
+[emulator.exit]
+signal = "SIGINT"
+timeout_ms = 10000
 
 [emulator.input]
 target = "xb360"
