@@ -3,7 +3,7 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
-use sdl2::render::{Canvas, TextureQuery};
+use sdl2::render::Canvas;
 use sdl2::ttf::{Font, Sdl2TtfContext};
 use sdl2::video::Window;
 use std::collections::BTreeSet;
@@ -12,8 +12,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::{interval, MissedTickBehavior};
-use zaman_sessiond::contract::{INTERFACE, PATH, SERVICE};
-use zbus::{Connection, Proxy};
+use zaman_sessiond::contract::{INTERFACE, MENU_SERVICE, PATH, SERVICE};
+use zbus::{connection::Builder, Proxy};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -23,30 +23,20 @@ const FONT_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
 ];
 
-const MENU_ITEMS: [MenuItem; 2] = [
-    MenuItem {
-        label: "Resume",
-        detail: "Return to the current game",
-        command: MenuCommand::Resume,
-    },
-    MenuItem {
-        label: "Exit Game",
-        detail: "Close the current game session",
-        command: MenuCommand::ExitGame,
-    },
-];
+const MENU_ITEMS: [MenuItem; 1] = [MenuItem {
+    label: "Resume",
+    command: MenuCommand::Close,
+}];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MenuCommand {
-    Resume,
-    ExitGame,
+    Close,
 }
 
 impl MenuCommand {
     fn method(self) -> &'static str {
         match self {
-            Self::Resume => "Resume",
-            Self::ExitGame => "ExitGame",
+            Self::Close => "CloseMenu",
         }
     }
 }
@@ -54,7 +44,6 @@ impl MenuCommand {
 #[derive(Clone, Copy, Debug)]
 struct MenuItem {
     label: &'static str,
-    detail: &'static str,
     command: MenuCommand,
 }
 
@@ -82,9 +71,19 @@ impl MenuModel {
     }
 
     fn normalized_input(&mut self, event: &str, value: f64) -> ModelEffect {
+        // Complete controller-driven close actions on release. This keeps
+        // InputPlumber in ALL mode for the entire click and avoids carrying a
+        // pressed A/B state into PASS mode after the menu disappears.
         if value <= 0.5 {
-            self.pressed.remove(event);
-            return ModelEffect::None;
+            if !self.pressed.remove(event) {
+                return ModelEffect::None;
+            }
+
+            return match event {
+                "ui_accept" => ModelEffect::Activate(MENU_ITEMS[self.selected].command),
+                "ui_back" | "ui_cancel" => ModelEffect::Activate(MenuCommand::Close),
+                _ => ModelEffect::None,
+            };
         }
 
         if !self.pressed.insert(event.to_string()) {
@@ -104,8 +103,7 @@ impl MenuModel {
                 self.selected = (self.selected + 1) % MENU_ITEMS.len();
                 ModelEffect::Redraw
             }
-            "ui_accept" => ModelEffect::Activate(MENU_ITEMS[self.selected].command),
-            "ui_back" | "ui_cancel" => ModelEffect::Activate(MenuCommand::Resume),
+            "ui_accept" | "ui_back" | "ui_cancel" => ModelEffect::None,
             _ => ModelEffect::None,
         }
     }
@@ -127,7 +125,7 @@ impl MenuModel {
             Keycode::Return | Keycode::Space => {
                 ModelEffect::Activate(MENU_ITEMS[self.selected].command)
             }
-            Keycode::Escape => ModelEffect::Activate(MenuCommand::Resume),
+            Keycode::Escape => ModelEffect::Activate(MenuCommand::Close),
             _ => ModelEffect::None,
         }
     }
@@ -177,6 +175,9 @@ impl MenuSurface {
         event: &str,
         value: f64,
     ) -> Result<ModelEffect> {
+        if self.pending {
+            return Ok(ModelEffect::None);
+        }
         let effect = self.model.normalized_input(event, value);
         if effect == ModelEffect::Redraw {
             self.render(ttf, font_path)?;
@@ -214,112 +215,54 @@ impl MenuSurface {
     fn render(&mut self, ttf: &Sdl2TtfContext, font_path: &Path) -> Result<()> {
         let (width, height) = self.canvas.output_size().map_err(other)?;
         let scale = (height as f32 / 1080.0).clamp(0.65, 2.0);
-        let margin = (88.0 * scale) as i32;
-        let title_size = (58.0 * scale).round() as u16;
-        let subtitle_size = (24.0 * scale).round() as u16;
-        let item_size = (38.0 * scale).round() as u16;
-        let detail_size = (21.0 * scale).round() as u16;
+        let title_size = (68.0 * scale).round() as u16;
+        let item_size = (46.0 * scale).round() as u16;
         let footer_size = (20.0 * scale).round() as u16;
         let title_font = ttf.load_font(font_path, title_size).map_err(other)?;
-        let subtitle_font = ttf.load_font(font_path, subtitle_size).map_err(other)?;
         let item_font = ttf.load_font(font_path, item_size).map_err(other)?;
-        let detail_font = ttf.load_font(font_path, detail_size).map_err(other)?;
         let footer_font = ttf.load_font(font_path, footer_size).map_err(other)?;
 
-        self.canvas.set_draw_color(Color::RGB(9, 13, 22));
+        self.canvas.set_draw_color(Color::RGB(16, 12, 6));
         self.canvas.clear();
 
-        self.canvas.set_draw_color(Color::RGB(14, 22, 35));
-        self.canvas
-            .fill_rect(Rect::new(0, 0, (width as f32 * 0.62) as u32, height))
-            .map_err(other)?;
-        self.canvas.set_draw_color(Color::RGB(33, 211, 197));
-        self.canvas
-            .fill_rect(Rect::new(0, 0, (10.0 * scale) as u32, height))
-            .map_err(other)?;
-
-        draw_text(
+        draw_centered_text(
             &mut self.canvas,
             &title_font,
             "ZAMAN",
-            Color::RGB(239, 246, 255),
-            margin,
-            margin,
+            Color::RGB(242, 236, 224),
+            width,
+            (height as f32 * 0.18) as i32,
         )?;
-        draw_text(
+
+        let item_label = format!("▶  {}", MENU_ITEMS[self.model.selected].label);
+        draw_centered_text(
             &mut self.canvas,
-            &subtitle_font,
-            "SYSTEM MENU",
-            Color::RGB(33, 211, 197),
-            margin,
-            margin + (78.0 * scale) as i32,
+            &item_font,
+            &item_label,
+            Color::RGB(230, 178, 90),
+            width,
+            (height as f32 * 0.48) as i32,
         )?;
-
-        let item_x = margin;
-        let item_width = ((width as f32 * 0.46) - margin as f32).max(420.0 * scale) as u32;
-        let item_height = (116.0 * scale) as u32;
-        let item_gap = (18.0 * scale) as i32;
-        let first_y = (height as f32 * 0.39) as i32;
-
-        for (index, item) in MENU_ITEMS.iter().enumerate() {
-            let y = first_y + index as i32 * (item_height as i32 + item_gap);
-            let selected = index == self.model.selected;
-            self.canvas.set_draw_color(if selected {
-                Color::RGB(33, 211, 197)
-            } else {
-                Color::RGB(25, 35, 51)
-            });
-            self.canvas
-                .fill_rect(Rect::new(item_x, y, item_width, item_height))
-                .map_err(other)?;
-
-            let label_color = if selected {
-                Color::RGB(5, 24, 29)
-            } else {
-                Color::RGB(235, 242, 250)
-            };
-            let detail_color = if selected {
-                Color::RGB(13, 61, 64)
-            } else {
-                Color::RGB(151, 166, 184)
-            };
-            draw_text(
-                &mut self.canvas,
-                &item_font,
-                item.label,
-                label_color,
-                item_x + (28.0 * scale) as i32,
-                y + (18.0 * scale) as i32,
-            )?;
-            draw_text(
-                &mut self.canvas,
-                &detail_font,
-                item.detail,
-                detail_color,
-                item_x + (30.0 * scale) as i32,
-                y + (70.0 * scale) as i32,
-            )?;
-        }
 
         let footer = if self.pending {
             "Applying selection..."
         } else if let Some(error) = self.error.as_deref() {
             error
         } else {
-            "NAVIGATE     ACCEPT  Select     BACK  Resume"
+            "A  Select        B  Back"
         };
         let footer_color = if self.error.is_some() {
             Color::RGB(255, 128, 128)
         } else {
-            Color::RGB(151, 166, 184)
+            Color::RGB(196, 117, 66)
         };
-        draw_text(
+        draw_centered_text(
             &mut self.canvas,
             &footer_font,
             footer,
             footer_color,
-            margin,
-            height as i32 - margin,
+            width,
+            (height as f32 * 0.88) as i32,
         )?;
 
         self.canvas.present();
@@ -338,7 +281,7 @@ async fn main() -> Result<()> {
     let video = sdl.video().map_err(other)?;
     let ttf = sdl2::ttf::init().map_err(other)?;
     let mut event_pump = sdl.event_pump().map_err(other)?;
-    let connection = Connection::session().await?;
+    let connection = Builder::session()?.name(MENU_SERVICE)?.build().await?;
     let proxy = Proxy::new(&connection, SERVICE, PATH, INTERFACE).await?;
 
     let mut opened = proxy.receive_signal("MenuOpened").await?;
@@ -350,7 +293,9 @@ async fn main() -> Result<()> {
             "Synchronizing already-open menu generation={} reason={}.",
             status.1, status.2
         );
-        Some(MenuSurface::open(&video, &ttf, &font_path, status.1)?)
+        let surface = Some(MenuSurface::open(&video, &ttf, &font_path, status.1)?);
+        let _: () = proxy.call("MenuPresented", &(status.1)).await?;
+        surface
     } else {
         None
     };
@@ -364,8 +309,14 @@ async fn main() -> Result<()> {
             message = opened.next() => {
                 let message = message.ok_or_else(|| other("MenuOpened signal stream closed"))?;
                 let (generation, reason): (u64, String) = message.body().deserialize()?;
+                if surface.as_ref().is_some_and(|current| current.model.generation == generation) {
+                    println!("Menu generation={generation} is already visible; acknowledging duplicate notification.");
+                    let _: () = proxy.call("MenuPresented", &(generation)).await?;
+                    continue;
+                }
                 println!("Opening menu generation={generation} reason={reason}.");
                 surface = Some(MenuSurface::open(&video, &ttf, &font_path, generation)?);
+                let _: () = proxy.call("MenuPresented", &(generation)).await?;
             }
             message = closed.next() => {
                 let message = message.ok_or_else(|| other("MenuClosed signal stream closed"))?;
@@ -435,12 +386,12 @@ async fn activate(
     Ok(())
 }
 
-fn draw_text(
+fn draw_centered_text(
     canvas: &mut Canvas<Window>,
     font: &Font<'_, '_>,
     text: &str,
     color: Color,
-    x: i32,
+    width: u32,
     y: i32,
 ) -> Result<()> {
     let surface = font.render(text).blended(color).map_err(other)?;
@@ -448,9 +399,10 @@ fn draw_text(
     let texture = texture_creator
         .create_texture_from_surface(&surface)
         .map_err(other)?;
-    let TextureQuery { width, height, .. } = texture.query();
+    let query = texture.query();
+    let x = ((width.saturating_sub(query.width)) / 2) as i32;
     canvas
-        .copy(&texture, None, Rect::new(x, y, width, height))
+        .copy(&texture, None, Rect::new(x, y, query.width, query.height))
         .map_err(other)?;
     Ok(())
 }
@@ -484,30 +436,28 @@ mod tests {
     use super::{MenuCommand, MenuModel, ModelEffect};
 
     #[test]
-    fn accept_activates_the_selected_item_once_per_press() {
+    fn accept_activates_once_on_release() {
         let mut model = MenuModel::new(7);
 
-        assert_eq!(
-            model.normalized_input("ui_accept", 1.0),
-            ModelEffect::Activate(MenuCommand::Resume)
-        );
         assert_eq!(model.normalized_input("ui_accept", 1.0), ModelEffect::None);
-        assert_eq!(model.normalized_input("ui_accept", 0.0), ModelEffect::None);
+        assert_eq!(model.normalized_input("ui_accept", 1.0), ModelEffect::None);
         assert_eq!(
-            model.normalized_input("ui_accept", 1.0),
-            ModelEffect::Activate(MenuCommand::Resume)
+            model.normalized_input("ui_accept", 0.0),
+            ModelEffect::Activate(MenuCommand::Close)
         );
+        assert_eq!(model.normalized_input("ui_accept", 0.0), ModelEffect::None);
     }
 
     #[test]
-    fn navigation_wraps_and_exit_is_the_second_item() {
+    fn navigation_keeps_the_only_phase_a_item_selected() {
         let mut model = MenuModel::new(1);
 
         assert_eq!(model.normalized_input("ui_up", 1.0), ModelEffect::Redraw);
         model.normalized_input("ui_up", 0.0);
+        assert_eq!(model.normalized_input("ui_accept", 1.0), ModelEffect::None);
         assert_eq!(
-            model.normalized_input("ui_accept", 1.0),
-            ModelEffect::Activate(MenuCommand::ExitGame)
+            model.normalized_input("ui_accept", 0.0),
+            ModelEffect::Activate(MenuCommand::Close)
         );
     }
 
@@ -517,9 +467,10 @@ mod tests {
         model.normalized_input("ui_down", 1.0);
         model.normalized_input("ui_down", 0.0);
 
+        assert_eq!(model.normalized_input("ui_back", 1.0), ModelEffect::None);
         assert_eq!(
-            model.normalized_input("ui_back", 1.0),
-            ModelEffect::Activate(MenuCommand::Resume)
+            model.normalized_input("ui_back", 0.0),
+            ModelEffect::Activate(MenuCommand::Close)
         );
     }
 

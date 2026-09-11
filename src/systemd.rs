@@ -11,6 +11,7 @@ const SERVICE: &str = "org.freedesktop.systemd1";
 const PATH: &str = "/org/freedesktop/systemd1";
 const MANAGER_INTERFACE: &str = "org.freedesktop.systemd1.Manager";
 const GAME_UNIT: &str = "zaman-game.service";
+const MENU_UNIT: &str = "zaman-menu.service";
 const JOB_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +59,13 @@ impl UserSystemd {
         })
         .await?;
         Ok(true)
+    }
+
+    pub async fn start_menu(&self) -> Result<()> {
+        let manager = self.manager().await?;
+        let mut removed_jobs = manager.receive_signal("JobRemoved").await?;
+        let job_path: OwnedObjectPath = manager.call("StartUnit", &(MENU_UNIT, "replace")).await?;
+        wait_for_job(&mut removed_jobs, &job_path, MENU_UNIT, "start").await
     }
 
     pub async fn launch(&self, command: &CommandSpec) -> Result<GameHandle> {

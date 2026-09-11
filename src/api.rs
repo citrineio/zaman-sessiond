@@ -2,16 +2,28 @@ use crate::error::{message, Result};
 use crate::menu::{MenuController, MenuEvent};
 use crate::registry::{Registry, ResolvedLaunch};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use zaman_sessiond::contract::{INTERFACE, PATH, VERSION};
 use zbus::object_server::SignalEmitter;
 use zbus::{fdo, interface, Connection};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MenuAction {
+    Open,
+    Close,
+    Toggle,
+}
+
+#[derive(Debug)]
 pub enum ApiCommand {
     Launch(ResolvedLaunch),
     Stop,
-    Resume,
+    Menu {
+        action: MenuAction,
+        reason: &'static str,
+        reply: oneshot::Sender<std::result::Result<(), String>>,
+    },
+    MenuClientExited,
     ExitGame,
     Shutdown, // power off the SYSTEM via logind
     Quit,     // shut down the DAEMON only
@@ -181,6 +193,20 @@ impl SessionApi {
             .map_err(|_| fdo::Error::Failed("zaman-sessiond worker is unavailable".to_string()))
     }
 
+    async fn request_menu(&self, action: MenuAction, reason: &'static str) -> fdo::Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.send_command(ApiCommand::Menu {
+            action,
+            reason,
+            reply,
+        })
+        .await?;
+        response
+            .await
+            .map_err(|_| fdo::Error::Failed("zaman-sessiond menu worker stopped".to_string()))?
+            .map_err(fdo::Error::Failed)
+    }
+
     fn require_open_menu(&self) -> fdo::Result<()> {
         if self.menu.snapshot().open {
             Ok(())
@@ -195,6 +221,11 @@ impl SessionApi {
 #[interface(name = "com.kawnelectro.Zaman.Session1")]
 impl SessionApi {
     async fn launch(&self, system_id: &str, rom_path: &str) -> fdo::Result<()> {
+        if self.menu.snapshot().open {
+            return Err(fdo::Error::Failed(
+                "close the Zaman menu before launching a game".to_string(),
+            ));
+        }
         let launch = self
             .registry
             .resolve(system_id, rom_path)
@@ -221,8 +252,19 @@ impl SessionApi {
     }
 
     async fn resume(&self) -> fdo::Result<()> {
-        self.require_open_menu()?;
-        self.send_command(ApiCommand::Resume).await
+        self.request_menu(MenuAction::Close, "resume").await
+    }
+
+    async fn open_menu(&self) -> fdo::Result<()> {
+        self.request_menu(MenuAction::Open, "manual-open").await
+    }
+
+    async fn close_menu(&self) -> fdo::Result<()> {
+        self.request_menu(MenuAction::Close, "manual-close").await
+    }
+
+    async fn toggle_menu(&self) -> fdo::Result<()> {
+        self.request_menu(MenuAction::Toggle, "manual-toggle").await
     }
 
     async fn exit_game(&self) -> fdo::Result<()> {
@@ -266,6 +308,28 @@ impl SessionApi {
     fn menu_status(&self) -> (bool, u64, String) {
         let menu = self.menu.snapshot();
         (menu.open, menu.generation, menu.reason)
+    }
+
+    #[zbus(out_args("foreground", "return_target", "reason"))]
+    fn foreground_status(&self) -> (String, String, String) {
+        let menu = self.menu.snapshot();
+        (
+            menu.foreground.as_str().to_string(),
+            menu.return_target
+                .map(|target| target.as_str().to_string())
+                .unwrap_or_default(),
+            menu.reason,
+        )
+    }
+
+    fn menu_presented(&self, generation: u64) -> fdo::Result<()> {
+        if self.menu.presented(generation) {
+            Ok(())
+        } else {
+            Err(fdo::Error::Failed(format!(
+                "menu generation {generation} is no longer current"
+            )))
+        }
     }
 
     #[zbus(signal)]

@@ -1,62 +1,102 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GuideAction {
-    MenuRequested,
+    Pressed,
     Released,
+}
+
+impl GuideAction {
+    pub fn from_input_value(value: f64) -> Self {
+        if value > 0.5 {
+            Self::Pressed
+        } else {
+            Self::Released
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuideEffect {
+    None,
+    OpenMenu,
+    CloseOnReleaseArmed,
+    CloseMenu,
 }
 
 #[derive(Debug, Default)]
 pub struct GuideButton {
     pressed: bool,
+    close_on_release: bool,
 }
 
 impl GuideButton {
-    pub fn press(&mut self) -> Vec<GuideAction> {
-        if self.pressed {
-            return Vec::new();
+    /// Opening remains press-triggered, but closing completes on release.
+    /// InputPlumber must see that release while interception is still ALL;
+    /// otherwise its D-Bus target can retain a pressed Guide state in PASS.
+    pub fn input(&mut self, action: GuideAction, menu_open: bool) -> GuideEffect {
+        match action {
+            GuideAction::Pressed if self.pressed => GuideEffect::None,
+            GuideAction::Pressed => {
+                self.pressed = true;
+                self.close_on_release = menu_open;
+                if menu_open {
+                    GuideEffect::CloseOnReleaseArmed
+                } else {
+                    GuideEffect::OpenMenu
+                }
+            }
+            GuideAction::Released if !self.pressed => GuideEffect::None,
+            GuideAction::Released => {
+                self.pressed = false;
+                if std::mem::take(&mut self.close_on_release) {
+                    GuideEffect::CloseMenu
+                } else {
+                    GuideEffect::None
+                }
+            }
         }
-
-        self.pressed = true;
-        vec![GuideAction::MenuRequested]
-    }
-
-    pub fn release(&mut self) -> Vec<GuideAction> {
-        if !self.pressed {
-            return Vec::new();
-        }
-
-        self.pressed = false;
-        vec![GuideAction::Released]
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GuideAction, GuideButton};
+    use super::{GuideAction, GuideButton, GuideEffect};
 
     #[test]
-    fn press_requests_the_menu_immediately() {
-        let mut button = GuideButton::default();
-        assert_eq!(button.press(), vec![GuideAction::MenuRequested]);
+    fn normalized_values_become_button_edges() {
+        assert_eq!(GuideAction::from_input_value(1.0), GuideAction::Pressed);
+        assert_eq!(GuideAction::from_input_value(0.0), GuideAction::Released);
     }
 
     #[test]
-    fn duplicate_press_is_ignored_until_release() {
+    fn opening_happens_on_press_and_does_not_close_on_the_same_release() {
         let mut button = GuideButton::default();
-        assert_eq!(button.press(), vec![GuideAction::MenuRequested]);
-        assert!(button.press().is_empty());
+        assert_eq!(
+            button.input(GuideAction::Pressed, false),
+            GuideEffect::OpenMenu
+        );
+        assert_eq!(button.input(GuideAction::Pressed, true), GuideEffect::None);
+        assert_eq!(button.input(GuideAction::Released, true), GuideEffect::None);
     }
 
     #[test]
-    fn release_rearms_the_button_without_requesting_another_menu() {
+    fn closing_waits_for_the_release_before_restoring_pass_through() {
         let mut button = GuideButton::default();
-        button.press();
-        assert_eq!(button.release(), vec![GuideAction::Released]);
-        assert_eq!(button.press(), vec![GuideAction::MenuRequested]);
+        assert_eq!(
+            button.input(GuideAction::Pressed, true),
+            GuideEffect::CloseOnReleaseArmed
+        );
+        assert_eq!(
+            button.input(GuideAction::Released, true),
+            GuideEffect::CloseMenu
+        );
     }
 
     #[test]
-    fn release_without_a_press_is_ignored() {
+    fn stale_release_is_ignored() {
         let mut button = GuideButton::default();
-        assert!(button.release().is_empty());
+        assert_eq!(
+            button.input(GuideAction::Released, false),
+            GuideEffect::None
+        );
     }
 }

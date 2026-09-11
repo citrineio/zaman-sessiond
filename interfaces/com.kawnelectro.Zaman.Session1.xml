@@ -6,6 +6,9 @@
       <arg name="rom_path" type="s" direction="in"/>
     </method>
     <method name="Stop"/>
+    <method name="OpenMenu"/>
+    <method name="CloseMenu"/>
+    <method name="ToggleMenu"/>
     <method name="Resume"/>
     <method name="ExitGame"/>
     <method name="Status">
@@ -23,6 +26,14 @@
       <arg name="open" type="b" direction="out"/>
       <arg name="generation" type="t" direction="out"/>
       <arg name="reason" type="s" direction="out"/>
+    </method>
+    <method name="ForegroundStatus">
+      <arg name="foreground" type="s" direction="out"/>
+      <arg name="return_target" type="s" direction="out"/>
+      <arg name="reason" type="s" direction="out"/>
+    </method>
+    <method name="MenuPresented">
+      <arg name="generation" type="t" direction="in"/>
     </method>
     <signal name="MenuOpened">
       <arg name="generation" type="t"/>

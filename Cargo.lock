@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "zaman-sessiond"
-version = "0.5.1"
+version = "0.6.2"
 dependencies = [
  "futures-util",
  "sdl2",

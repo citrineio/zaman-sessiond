@@ -11,7 +11,7 @@ controller identities, or kill emulator processes. Their contract is:
 zamanctl launch SYSTEM_ID /absolute/path/to/ROM
 ```
 
-`zamanctl launch` blocks until the session finishes. This gives ES-DE and other
+`zamanctl launch` blocks until the session finishes. This gives Pegasus and other
 frontends ordinary launch-and-return behavior while the persistent daemon
 continues to own supervision.
 
@@ -27,11 +27,18 @@ Methods:
 
 - `Launch(system_id, rom_path)` resolves and starts a registered emulator.
 - `Stop()` idempotently requests termination of the active game session.
-- `Resume()` closes an open system menu and returns controller input to the game.
+- `OpenMenu()` asks the standalone menu to take foreground control.
+- `CloseMenu()` restores the saved library/game return target.
+- `ToggleMenu()` serializes the corresponding open or close operation.
+- `Resume()` is the backwards-compatible alias for `CloseMenu()`.
 - `ExitGame()` accepts the system menu's explicit exit selection.
 - `Status()` reports state, selected system/emulator/ROM, result, and error.
+- `ForegroundStatus()` reports foreground, return target, and transition reason
+  without changing the stable `Status()` tuple.
 - `MenuStatus()` reports whether the menu is open, its generation, and the last
   transition reason.
+- `MenuPresented(generation)` lets the menu acknowledge successful surface
+  creation; a missing acknowledgement causes sessiond to restore the prior UI.
 - `Version()` returns the interface implementation version.
 
 Signals:
@@ -41,31 +48,33 @@ Signals:
 - `MenuInput(generation, event, value)` forwards normalized InputPlumber `ui_*`
   events while the menu owns controller input.
 
-The generation monotonically identifies each menu opening. A shell reads
+The generation monotonically identifies each menu opening. A menu client reads
 `MenuStatus()` when it starts, subscribes to the signals, and ignores input from
-an obsolete generation. Pegasus, another frontend, or a standalone overlay can
-implement this client without direct system-bus or controller access.
+an obsolete generation. A replacement standalone menu can implement this
+client without direct system-bus or controller access.
 
 ## Full-screen menu client
 
-`zaman-menu` is the reference standalone client for this contract. It stays
-connected to the user D-Bus without creating a window. `MenuOpened` creates a
-native Wayland SDL2 desktop-fullscreen surface above the current Cage client;
-`MenuClosed` destroys the surface so the still-running game becomes visible
-again. It does not open evdev, identify controllers, or depend on ES-DE or
-Pegasus.
+`zaman-menu` is the reference standalone client for this contract. It owns the
+well-known name `com.kawnelectro.Zaman.Menu1` while healthy and stays connected
+to the user D-Bus without creating a window. `MenuOpened` creates a native
+Wayland SDL2 desktop-fullscreen surface above the current Cage client and then
+acknowledges the generation. `MenuClosed` destroys the surface so the
+still-running Pegasus or game client becomes visible again. It does not open
+evdev, identify controllers, or depend on Pegasus.
 
-The first visual milestone exposes the two actions already implemented safely
-by the v0.3 session contract:
-
-- Resume
-- Exit Game
+Phase A deliberately exposes one action: Resume. Back/B and Escape request the
+same service-owned close operation. The existing `ExitGame()` API remains for
+compatibility but is not part of this minimal menu surface.
 
 Normalized `ui_up`, `ui_down`, `ui_left`, `ui_right`, `ui_accept`, `ui_back`,
 and `ui_cancel` events drive the menu. Repeated press events are suppressed
-until their matching release. Keyboard navigation remains available for bench
-recovery. Sleep and Power Off are intentionally not fake menu entries; they
-will be added after the polkit-governed power broker owns those operations.
+until their matching release. Accept and Back activate on release so
+InputPlumber observes the complete click before sessiond restores PASS mode;
+Guide uses the same release-safe close behavior. Keyboard navigation remains
+available for bench recovery. Sleep and Power Off are intentionally not fake
+menu entries; they will be added after the polkit-governed power broker owns
+those operations.
 
 The renderer uses SDL2 and SDL2_ttf. `ZAMAN_MENU_FONT` can name an explicit
 font; otherwise the client checks packaged Noto Sans and DejaVu Sans paths.
@@ -113,36 +122,53 @@ Each game runs as the transient user unit `zaman-game.service` with:
 - explicit `ExecStart` argv
 - inherited kiosk display/session environment plus registry overrides
 
-InputPlumber composites and normalized D-Bus targets are discovered at launch.
+InputPlumber composites and normalized D-Bus targets are discovered when the
+daemon starts and refreshed while it runs. Device additions/removals rebuild
+only the input listeners; they do not affect the game or foreground state.
 No username, controller model, VID/PID, event node, or composite index is part
 of the sessiond contract. Guide is reserved by setting InputPlumber PASS mode;
-cleanup restores NONE after D-Bus Stop, natural exit, or handled errors.
+PASS remains active across library and game state so Guide is globally
+available. Daemon shutdown restores NONE.
 
-One Guide press opens the system menu immediately. sessiond explicitly places
-all discovered composites in InputPlumber ALL mode, retains ownership after the
-button is released, and forwards normalized menu input over the user D-Bus.
-`Resume()` restores PASS and closes the menu. `ExitGame()` closes the menu and
-ends the supervised transient unit. Natural game exit and errors close stale
-menu state during cleanup.
+PASS mode reserves Guide as the normalized Zaman system action while leaving
+the composite controller available to Pegasus or the game. A Guide press calls
+the same serialized toggle path as `zamanctl menu toggle`. While the menu is
+open, sessiond places discovered composites in ALL mode and forwards normalized
+menu input over user D-Bus. Closing restores PASS. Natural game exit while its
+menu is open closes the menu and returns to the library.
 
 No long-hold action exists. Some controllers use a Guide hold for firmware
-power-off, so shutdown must be selected from the visible system menu instead of
-depending on controller-specific timing.
+power-off; Phase A assigns no hold gesture or power action.
 
 ## State model
 
-The public service state is intentionally small:
+The public game state remains intentionally small and compatible:
 
 ```text
 Idle -> Active -> Stopping -> Idle
                  \-> Failed
 ```
 
-The internal game session retains the finer-grained
-`Idle -> Starting -> Running -> MenuOpen -> Running/Stopping` transitions in
-its journal. Menu state is separately observable through `MenuStatus()`.
+Foreground state is independent:
+
+```text
+library <-> menu
+game    <-> menu
+```
+
+`return_target` exists only while foreground is `menu`. It is observable with
+`zamanctl status`; opening the menu never ends or pauses the game session.
+
+On daemon restart, the existing conservative recovery policy stops an orphaned
+`zaman-game.service` and returns to the library. On menu-client loss, sessiond
+restores the saved foreground and InputPlumber PASS mode. Cage itself remains
+the foreground mechanism: mapping the menu makes it current, and destroying
+that window reveals the preceding live client.
 
 ## Build and bench validation
+
+The Q6A installation and ten-cycle Pegasus/MesenCE acceptance procedure is in
+[`docs/phase-a.md`](docs/phase-a.md).
 
 ```bash
 ./tools/smoke-test.sh
@@ -166,11 +192,11 @@ built and tested the same tree, avoid repeating that work with
 
 The validator starts the real `zaman-menu` binary and asks for two ordinary
 Guide presses. On the first menu, the controller's normalized primary accept
-action selects Resume. On the second, Down followed by the primary accept
-action selects Exit Game. It verifies the visible full-screen surface,
-Guide-to-menu, retained ALL interception, Resume-to-PASS, and menu-selected
-ExitGame. It uses a synthetic supervised process and does not qualify MesenCE
-autosave or graceful termination.
+action selects Resume. On the second, Back/B selects the same action. It
+verifies the visible full-screen surface, Guide-to-menu, retained ALL
+interception, CloseMenu-to-PASS, and preservation of the supervised game unit.
+It uses a synthetic process and does not qualify real Cage focus restoration or
+MesenCE state preservation; those remain board acceptance tests.
 
 ## Distribution files
 
@@ -187,7 +213,6 @@ later Buildroot integration mechanical.
 ## Remaining work
 
 - Install and validate the production user units in the kiosk login session.
-- Add controller hotplug after a session has already started.
 - Add suspend and shutdown through a polkit-governed power broker.
 - Add emulator lifecycle adapters before treating `ExitGame()` as production-safe;
   the current bounded systemd stop path is validated only with synthetic games.

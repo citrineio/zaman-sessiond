@@ -10,7 +10,7 @@ mod session;
 mod systemd;
 
 use crate::api::{publish_menu_events, ApiCommand, SessionApi, SharedStatus};
-use crate::daemon::{recover_runtime, run_worker};
+use crate::daemon::{monitor_menu_client, recover_runtime, run_worker};
 use crate::error::Result;
 use crate::menu::MenuController;
 use crate::registry::Registry;
@@ -39,12 +39,15 @@ async fn main() -> Result<()> {
 
     let worker = run_worker(receiver, status, menu);
     let menu_publisher = publish_menu_events(connection.clone(), menu_events);
+    let menu_client_monitor = monitor_menu_client(connection.clone(), commands.clone());
     tokio::pin!(worker);
     tokio::pin!(menu_publisher);
+    tokio::pin!(menu_client_monitor);
 
     let trigger_result = tokio::select! {
         result = &mut worker => return result,
         result = &mut menu_publisher => result,
+        result = &mut menu_client_monitor => result,
         result = wait_for_shutdown_signal() => result,
     };
 

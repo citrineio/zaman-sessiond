@@ -10,17 +10,28 @@ PATH_OBJECT="/com/kawnelectro/Zaman/Session1"
 INTERFACE="com.kawnelectro.Zaman.Session1"
 UNIT="zaman-game.service"
 
+bus_name_owned() {
+    result=$(busctl --user call \
+        org.freedesktop.DBus \
+        /org/freedesktop/DBus \
+        org.freedesktop.DBus \
+        NameHasOwner s "$1" 2>/dev/null) || return 1
+    [ "$result" = "b true" ]
+}
+
 cd "$REPO_DIR"
 
 echo "[1/8] Formatting and compiling"
 cargo fmt
-git diff --check
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git diff --check
+fi
 cargo check --locked --all-targets
 cargo test --locked
 cargo build --locked --bins
 
 echo "[2/8] Checking service preconditions"
-if busctl --user --no-pager --no-legend list | awk -v service="$SERVICE" '$1 == service { found=1 } END { exit !found }'; then
+if bus_name_owned "$SERVICE"; then
     echo "FAIL: $SERVICE is already owned"
     exit 1
 fi
@@ -33,7 +44,7 @@ if ! systemctl is-active --quiet inputplumber.service; then
     exit 1
 fi
 
-TEST_ROOT=$(mktemp -d /tmp/zaman-sessiond-v04.XXXXXX)
+TEST_ROOT=$(mktemp -d /tmp/zaman-sessiond-v06.XXXXXX)
 DAEMON_LOG="$TEST_ROOT/daemon.log"
 FAST_LOG="$TEST_ROOT/fast.log"
 SLOW_LOG="$TEST_ROOT/slow.log"
@@ -109,7 +120,7 @@ DAEMON_PID=$!
 attempt=0
 SERVICE_READY=0
 while [ "$attempt" -lt 100 ]; do
-    if busctl --user --no-pager --no-legend list | awk -v service="$SERVICE" '$1 == service { found=1 } END { exit !found }'; then
+    if bus_name_owned "$SERVICE"; then
         SERVICE_READY=1
         break
     fi
@@ -140,15 +151,20 @@ if ! INTROSPECTION=$(busctl --user introspect "$SERVICE" "$PATH_OBJECT" "$INTERF
     cat "$DAEMON_LOG"
     exit 1
 fi
-for member in ExitGame Launch MenuClosed MenuInput MenuOpened MenuStatus Resume Status Stop Version; do
+for member in CloseMenu ExitGame ForegroundStatus Launch MenuClosed MenuInput MenuOpened MenuPresented MenuStatus OpenMenu Resume Status Stop ToggleMenu Version; do
     if ! printf '%s\n' "$INTROSPECTION" | grep -Fq ".$member"; then
         echo "FAIL: D-Bus member $member is missing"
         printf '%s\n' "$INTROSPECTION"
         exit 1
     fi
 done
-if [ "$("$CTL" version)" != "0.4.0" ]; then
+if [ "$("$CTL" version)" != "0.6.2" ]; then
     echo "FAIL: wrong zaman-sessiond version"
+    exit 1
+fi
+if ! "$CTL" status | grep -Fq "foreground=library"; then
+    echo "FAIL: initial foreground is not the library"
+    "$CTL" status
     exit 1
 fi
 if ! "$CTL" menu-status | grep -Fq "menu=closed"; then
@@ -156,8 +172,8 @@ if ! "$CTL" menu-status | grep -Fq "menu=closed"; then
     "$CTL" menu-status
     exit 1
 fi
-if "$CTL" resume >/dev/null 2>&1; then
-    echo "FAIL: Resume succeeded while the menu was closed"
+if ! "$CTL" resume >/dev/null 2>&1; then
+    echo "FAIL: idempotent Resume failed while the menu was closed"
     exit 1
 fi
 
@@ -216,14 +232,10 @@ if ! "$CTL" status | grep -Fq "state=Idle"; then
     "$CTL" status
     exit 1
 fi
-if grep -Fq "Discovered 0 composite device(s)" "$DAEMON_LOG"; then
-    if ! grep -Fq "Guide supervision deferred" "$DAEMON_LOG"; then
-        echo "FAIL: controller-free input degradation was not observed"
-        cat "$DAEMON_LOG"
-        exit 1
-    fi
-elif ! grep -Fq "InterceptMode to 0" "$DAEMON_LOG"; then
-    echo "FAIL: InputPlumber cleanup was not observed"
+if grep -Fq "normalized system input is unavailable" "$DAEMON_LOG"; then
+    echo "Normalized controller input was unavailable; degraded mode was observed."
+elif ! grep -Fq "InterceptMode to 1" "$DAEMON_LOG"; then
+    echo "FAIL: global Guide interception was not preserved"
     cat "$DAEMON_LOG"
     exit 1
 fi
@@ -234,4 +246,4 @@ DAEMON_PID=""
 OWNS_TEST_UNIT=0
 
 cat "$DAEMON_LOG"
-echo "PASS: zaman-sessiond v0.4 D-Bus, menu contract, and registry smoke test"
+echo "PASS: zaman-sessiond v0.6.2 D-Bus, foreground contract, and registry smoke test"

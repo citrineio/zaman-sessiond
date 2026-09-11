@@ -4,7 +4,8 @@ Requires=zaman-sessiond.service
 After=zaman-sessiond.service
 
 [Service]
-Type=simple
+Type=dbus
+BusName=com.kawnelectro.Zaman.Menu1
 ExecStart=/usr/libexec/zaman-menu
 Environment=SDL_VIDEODRIVER=wayland
 Restart=on-failure

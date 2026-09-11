@@ -1,32 +1,163 @@
-use crate::api::{ApiCommand, SharedStatus};
+use crate::api::{ApiCommand, MenuAction, SharedStatus};
 use crate::error::{message, Result};
-use crate::inputplumber::InputPlumber;
+use crate::guide::{GuideAction, GuideButton, GuideEffect};
+use crate::inputplumber::{
+    InputPlumber, Inventory, SystemInputEvent, SystemInputMonitor, INTERCEPT_ALL, INTERCEPT_NONE,
+    INTERCEPT_PASS,
+};
 use crate::menu::MenuController;
 use crate::registry::ResolvedLaunch;
 use crate::session::{Session, SessionControl, SessionOutcome};
 use crate::systemd::UserSystemd;
+use std::collections::BTreeMap;
+use std::future::pending;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::{interval_at, sleep, Instant, MissedTickBehavior};
+use zaman_sessiond::contract::MENU_SERVICE;
+use zbus::{Connection, Proxy};
+
+const MENU_PRESENT_TIMEOUT: Duration = Duration::from_secs(3);
+const INPUT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+
+struct InputRefresh {
+    replace_monitor: bool,
+    monitor: Option<SystemInputMonitor>,
+}
+
+impl InputRefresh {
+    fn unchanged() -> Self {
+        Self {
+            replace_monitor: false,
+            monitor: None,
+        }
+    }
+}
+
+struct SystemInput {
+    input: InputPlumber,
+    inventory: Inventory,
+    initialized: bool,
+    refresh_error: Option<String>,
+}
+
+impl SystemInput {
+    async fn connect() -> Result<(Self, Option<SystemInputMonitor>)> {
+        let input = InputPlumber::connect().await?;
+        let mut system_input = Self {
+            input,
+            inventory: Inventory::default(),
+            initialized: false,
+            refresh_error: None,
+        };
+        let refresh = system_input.refresh(INTERCEPT_PASS, true).await;
+        Ok((system_input, refresh.monitor))
+    }
+
+    async fn set_mode(&self, mode: u32) -> Result<()> {
+        self.input.set_intercept_mode(&self.inventory, mode).await
+    }
+
+    async fn refresh(&mut self, mode: u32, force_monitor: bool) -> InputRefresh {
+        match self.try_refresh(mode, force_monitor).await {
+            Ok(refresh) => {
+                if self.refresh_error.take().is_some() {
+                    println!("InputPlumber supervision recovered.");
+                }
+                refresh
+            }
+            Err(error) => {
+                let error = error.to_string();
+                if self.refresh_error.as_deref() != Some(error.as_str()) {
+                    eprintln!("InputPlumber refresh failed: {error}; retrying.");
+                    self.refresh_error = Some(error);
+                }
+                InputRefresh::unchanged()
+            }
+        }
+    }
+
+    async fn try_refresh(&mut self, mode: u32, force_monitor: bool) -> Result<InputRefresh> {
+        let inventory = self.input.discover().await?;
+        let changed = !self.initialized || inventory != self.inventory;
+
+        if !should_rebuild_input(
+            self.initialized,
+            changed,
+            force_monitor,
+            inventory.has_system_input(),
+        ) {
+            return Ok(InputRefresh::unchanged());
+        }
+
+        if inventory.has_system_input() {
+            self.input.set_intercept_mode(&inventory, mode).await?;
+        }
+
+        if changed {
+            if inventory.has_system_input() {
+                println!("InputPlumber system input available; rebuilding supervision.");
+            } else {
+                eprintln!(
+                    "InputPlumber normalized system input is unavailable; retrying discovery."
+                );
+            }
+            inventory.log();
+        }
+
+        let monitor = self.input.monitor_system_input(&inventory, changed);
+        self.inventory = inventory;
+        self.initialized = true;
+        Ok(InputRefresh {
+            replace_monitor: true,
+            monitor,
+        })
+    }
+}
+
+fn should_rebuild_input(
+    initialized: bool,
+    inventory_changed: bool,
+    force_monitor: bool,
+    has_system_input: bool,
+) -> bool {
+    !initialized || inventory_changed || (force_monitor && has_system_input)
+}
 
 pub async fn recover_runtime() -> Result<()> {
     let systemd = UserSystemd::connect().await?;
     if systemd.recover_orphaned_game().await? {
-        println!("Stopped orphaned zaman-game.service during recovery.");
+        println!("Stopped orphaned zaman-game.service during recovery; returning to library.");
     }
-
-    match InputPlumber::connect().await {
-        Ok(input) => match input.discover().await {
-            Ok(inventory) => {
-                input
-                    .set_intercept_mode(&inventory, crate::inputplumber::INTERCEPT_NONE)
-                    .await?;
-            }
-            Err(error) => eprintln!("Input recovery deferred: {error}"),
-        },
-        Err(error) => eprintln!("Input recovery deferred: {error}"),
-    }
-
     Ok(())
+}
+
+pub async fn monitor_menu_client(
+    connection: Connection,
+    commands: mpsc::Sender<ApiCommand>,
+) -> Result<()> {
+    let proxy = Proxy::new(
+        &connection,
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+    )
+    .await?;
+    let mut changes = proxy
+        .receive_signal_with_args("NameOwnerChanged", &[(0, MENU_SERVICE)])
+        .await?;
+
+    use futures_util::StreamExt;
+    while let Some(change) = changes.next().await {
+        let (name, old_owner, new_owner): (String, String, String) = change.body().deserialize()?;
+        if name == MENU_SERVICE && !old_owner.is_empty() && new_owner.is_empty() {
+            if commands.send(ApiCommand::MenuClientExited).await.is_err() {
+                return Ok(());
+            }
+        }
+    }
+    Err(message("D-Bus NameOwnerChanged stream closed"))
 }
 
 pub async fn run_worker(
@@ -34,8 +165,16 @@ pub async fn run_worker(
     status: SharedStatus,
     menu: MenuController,
 ) -> Result<()> {
+    let (mut system_input, mut input_monitor) = SystemInput::connect().await?;
     let mut sessions: JoinSet<Result<SessionOutcome>> = JoinSet::new();
     let mut active_control: Option<mpsc::Sender<SessionControl>> = None;
+    let mut guide_buttons = BTreeMap::<String, GuideButton>::new();
+    let mut input_listener_loss_reported = false;
+    let mut input_refresh = interval_at(
+        Instant::now() + INPUT_REFRESH_INTERVAL,
+        INPUT_REFRESH_INTERVAL,
+    );
+    input_refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -46,41 +185,70 @@ pub async fn run_worker(
                             status.fail("worker received a second launch while active");
                             continue;
                         }
+                        let force_monitor = input_monitor.is_none();
+                        refresh_system_input(
+                            &mut system_input,
+                            &mut input_monitor,
+                            &mut guide_buttons,
+                            if menu.snapshot().open { INTERCEPT_ALL } else { INTERCEPT_PASS },
+                            force_monitor,
+                        ).await;
+                        menu.game_started();
                         let (control, controls) = mpsc::channel(8);
                         active_control = Some(control);
-                        sessions.spawn(run_session(launch, controls, menu.clone()));
+                        sessions.spawn(run_session(launch, controls));
                     }
                     Some(ApiCommand::Stop) => {
+                        let _ = close_menu(&menu, &system_input, false, "session-stop").await;
                         if let Some(control) = &active_control {
                             status.mark_stopping();
                             let _ = control.send(SessionControl::Stop).await;
                         }
                     }
-                    Some(ApiCommand::Resume) => {
-                        if let Some(control) = &active_control {
-                            let _ = control.send(SessionControl::Resume).await;
+                    Some(ApiCommand::Menu { action, reason, reply }) => {
+                        let result = handle_menu_action(
+                            action,
+                            reason,
+                            &menu,
+                            &system_input,
+                            active_control.is_some(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string());
+                        let _ = reply.send(result);
+                    }
+                    Some(ApiCommand::MenuClientExited) => {
+                        if menu.snapshot().open {
+                            eprintln!("menu process exited unexpectedly");
+                            eprintln!(
+                                "restoring {}",
+                                if active_control.is_some() { "game" } else { "library" }
+                            );
+                            if let Err(error) = system_input.set_mode(INTERCEPT_PASS).await {
+                                eprintln!("Failed to restore controller input after menu exit: {error}");
+                            }
+                            menu.close("menu-process-exited", active_control.is_some());
                         }
                     }
                     Some(ApiCommand::ExitGame) => {
+                        let _ = close_menu(&menu, &system_input, false, "exit-game").await;
                         if let Some(control) = &active_control {
                             status.mark_stopping();
                             let _ = control.send(SessionControl::ExitGame).await;
                         }
                     }
                     Some(ApiCommand::Shutdown) => {
+                        let _ = close_menu(&menu, &system_input, false, "shutdown").await;
                         match &active_control {
-                            // Game running: graceful exit first; PowerOff
-                            // fires in the completion branch below once the
-                            // session reports ShutdownRequested.
                             Some(control) => {
                                 status.mark_stopping();
                                 let _ = control.send(SessionControl::Shutdown).await;
                             }
-                            // Idle: nothing to save, power off immediately.
                             None => power_off().await,
                         }
                     }
                     Some(ApiCommand::Quit) | None => {
+                        let _ = close_menu(&menu, &system_input, false, "daemon-stop").await;
                         if let Some(control) = &active_control {
                             status.mark_stopping();
                             let _ = control.send(SessionControl::Stop).await;
@@ -88,15 +256,53 @@ pub async fn run_worker(
                         while let Some(result) = sessions.join_next().await {
                             record_completion(&status, result);
                         }
+                        let _ = system_input.set_mode(INTERCEPT_NONE).await;
                         return Ok(());
                     }
                 }
+            }
+            input_event = next_system_input(&mut input_monitor) => {
+                match input_event {
+                    Some(input_event) => {
+                        input_listener_loss_reported = false;
+                        handle_system_input(
+                            input_event,
+                            &menu,
+                            &system_input,
+                            active_control.is_some(),
+                            &mut guide_buttons,
+                        ).await?;
+                    }
+                    None => {
+                        if !input_listener_loss_reported {
+                            eprintln!("All InputPlumber event listeners stopped; reconnecting.");
+                            input_listener_loss_reported = true;
+                        }
+                        input_monitor = None;
+                        guide_buttons.clear();
+                    }
+                }
+            }
+            _ = input_refresh.tick() => {
+                let force_monitor = input_monitor.is_none();
+                refresh_system_input(
+                    &mut system_input,
+                    &mut input_monitor,
+                    &mut guide_buttons,
+                    if menu.snapshot().open { INTERCEPT_ALL } else { INTERCEPT_PASS },
+                    force_monitor,
+                ).await;
             }
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 if let Some(result) = completed {
                     let shutdown = matches!(result, Ok(Ok(SessionOutcome::ShutdownRequested)));
                     record_completion(&status, result);
                     active_control = None;
+                    if menu.game_ended("game-ended") {
+                        if let Err(error) = system_input.set_mode(INTERCEPT_PASS).await {
+                            eprintln!("Failed to restore library input after game exit: {error}");
+                        }
+                    }
                     if shutdown {
                         power_off().await;
                     }
@@ -106,26 +312,194 @@ pub async fn run_worker(
     }
 }
 
+async fn next_system_input(monitor: &mut Option<SystemInputMonitor>) -> Option<SystemInputEvent> {
+    match monitor.as_mut() {
+        Some(monitor) => monitor.next().await,
+        None => pending::<Option<SystemInputEvent>>().await,
+    }
+}
+
+async fn refresh_system_input(
+    input: &mut SystemInput,
+    monitor: &mut Option<SystemInputMonitor>,
+    guide_buttons: &mut BTreeMap<String, GuideButton>,
+    mode: u32,
+    force_monitor: bool,
+) {
+    let refresh = input.refresh(mode, force_monitor).await;
+    if !refresh.replace_monitor {
+        return;
+    }
+
+    *monitor = refresh.monitor;
+    guide_buttons.clear();
+}
+
+async fn handle_system_input(
+    event: SystemInputEvent,
+    menu: &MenuController,
+    input: &SystemInput,
+    game_active: bool,
+    guide_buttons: &mut BTreeMap<String, GuideButton>,
+) -> Result<()> {
+    match event {
+        SystemInputEvent::Guide { target, action } => {
+            let menu_open = menu.snapshot().open;
+            let effect = guide_buttons
+                .entry(target.clone())
+                .or_default()
+                .input(action, menu_open);
+            match effect {
+                GuideEffect::OpenMenu => {
+                    println!("Guide press requested OpenMenu from {target}.");
+                    if let Err(error) =
+                        handle_menu_action(MenuAction::Open, "guide", menu, input, game_active)
+                            .await
+                    {
+                        eprintln!("Guide menu request failed: {error}");
+                    }
+                }
+                GuideEffect::CloseOnReleaseArmed => {
+                    println!("Guide press armed CloseMenu from {target}; waiting for release.");
+                }
+                GuideEffect::CloseMenu => {
+                    println!("Guide release requested CloseMenu from {target}.");
+                    if let Err(error) =
+                        handle_menu_action(MenuAction::Close, "guide", menu, input, game_active)
+                            .await
+                    {
+                        eprintln!("Guide menu request failed: {error}");
+                    }
+                }
+                GuideEffect::None if action == GuideAction::Released => {
+                    println!("Guide released by {target}.");
+                }
+                GuideEffect::None => {}
+            }
+        }
+        SystemInputEvent::MenuInput { event, value } => {
+            let forwarded = menu.input(event.clone(), value);
+            if forwarded && value > 0.5 {
+                println!("System menu input event={event} value={value}.");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_menu_action(
+    action: MenuAction,
+    reason: &'static str,
+    menu: &MenuController,
+    input: &SystemInput,
+    game_active: bool,
+) -> Result<()> {
+    match action {
+        MenuAction::Open => open_menu(menu, input, reason, game_active).await,
+        MenuAction::Close => close_menu(menu, input, game_active, reason).await,
+        MenuAction::Toggle if menu.snapshot().open => {
+            close_menu(menu, input, game_active, reason).await
+        }
+        MenuAction::Toggle => open_menu(menu, input, reason, game_active).await,
+    }
+}
+
+async fn open_menu(
+    menu: &MenuController,
+    input: &SystemInput,
+    reason: &'static str,
+    game_active: bool,
+) -> Result<()> {
+    if menu.snapshot().open {
+        println!("OpenMenu ignored because the menu is already active.");
+        return Ok(());
+    }
+
+    ensure_menu_client().await?;
+    if let Err(error) = input.set_mode(INTERCEPT_ALL).await {
+        if let Err(restore_error) = input.set_mode(INTERCEPT_PASS).await {
+            eprintln!(
+                "Failed to restore controller input after menu interception failed: {restore_error}"
+            );
+        }
+        return Err(error);
+    }
+    let Some(generation) = menu.open(reason) else {
+        input.set_mode(INTERCEPT_PASS).await?;
+        return Ok(());
+    };
+
+    if menu
+        .wait_until_presented(generation, MENU_PRESENT_TIMEOUT)
+        .await
+    {
+        println!("menu generation={generation} presented");
+        return Ok(());
+    }
+
+    eprintln!("menu generation={generation} failed to present; restoring previous foreground");
+    menu.close("menu-launch-failed", game_active);
+    let restore_result = input.set_mode(INTERCEPT_PASS).await;
+    restore_result?;
+    Err(message(
+        "zaman-menu did not present its surface within 3 seconds",
+    ))
+}
+
+async fn close_menu(
+    menu: &MenuController,
+    input: &SystemInput,
+    game_active: bool,
+    reason: &'static str,
+) -> Result<()> {
+    if !menu.snapshot().open {
+        println!("CloseMenu ignored because the menu is already closed.");
+        return Ok(());
+    }
+
+    let input_result = input.set_mode(INTERCEPT_PASS).await;
+    menu.close(reason, game_active);
+    input_result
+}
+
+async fn ensure_menu_client() -> Result<()> {
+    let connection = Connection::session().await?;
+    if name_has_owner(&connection).await? {
+        return Ok(());
+    }
+
+    println!("zaman-menu is unavailable; requesting zaman-menu.service start.");
+    UserSystemd::connect().await?.start_menu().await?;
+    for _ in 0..60 {
+        if name_has_owner(&connection).await? {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    Err(message("zaman-menu D-Bus client did not become ready"))
+}
+
+async fn name_has_owner(connection: &Connection) -> Result<bool> {
+    let proxy = Proxy::new(
+        connection,
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+    )
+    .await?;
+    Ok(proxy.call("NameHasOwner", &(MENU_SERVICE)).await?)
+}
+
 async fn run_session(
     launch: ResolvedLaunch,
     controls: mpsc::Receiver<SessionControl>,
-    menu: MenuController,
 ) -> Result<SessionOutcome> {
     println!(
         "Launching system={} emulator={} ({}) ROM={}",
         launch.system_id, launch.emulator_id, launch.emulator_name, launch.rom_path
     );
-
-    let input = InputPlumber::connect().await?;
-    let inventory = input.discover().await?;
     let systemd = UserSystemd::connect().await?;
-    println!(
-        "Discovered {} composite device(s) and {} normalized D-Bus target(s).",
-        inventory.composite_count(),
-        inventory.target_count()
-    );
-
-    let mut session = Session::new(input, systemd, inventory, menu);
+    let mut session = Session::new(systemd);
     session.run(&launch.command, controls).await
 }
 
@@ -150,9 +524,6 @@ fn record_completion(
     }
 }
 
-/// Powers the system off through logind so polkit policy applies and
-/// systemd performs the full unmount+sync teardown. Failure is logged and
-/// the daemon keeps running — the game is already safely exited by then.
 async fn power_off() {
     async fn inner() -> zbus::Result<()> {
         let connection = zbus::Connection::system().await?;
@@ -168,5 +539,32 @@ async fn power_off() {
 
     if let Err(error) = inner().await {
         eprintln!("System power-off failed: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_rebuild_input;
+
+    #[test]
+    fn initial_discovery_is_always_recorded() {
+        assert!(should_rebuild_input(false, false, false, false));
+    }
+
+    #[test]
+    fn hotplug_inventory_change_rebuilds_the_monitor() {
+        assert!(should_rebuild_input(true, true, false, true));
+        assert!(should_rebuild_input(true, true, false, false));
+    }
+
+    #[test]
+    fn listener_loss_reconnects_an_unchanged_available_target() {
+        assert!(should_rebuild_input(true, false, true, true));
+    }
+
+    #[test]
+    fn stable_or_still_empty_inventory_does_not_churn() {
+        assert!(!should_rebuild_input(true, false, false, true));
+        assert!(!should_rebuild_input(true, false, true, false));
     }
 }

@@ -1,5 +1,5 @@
 use crate::error::{message, Result};
-use crate::guide::{GuideAction, GuideButton};
+use crate::guide::GuideAction;
 use futures_util::StreamExt;
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
@@ -16,14 +16,15 @@ pub const INTERCEPT_NONE: u32 = 0;
 pub const INTERCEPT_PASS: u32 = 1;
 pub const INTERCEPT_ALL: u32 = 2;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Composite {
     path: String,
     name: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Inventory {
+    service_owner: String,
     composites: Vec<Composite>,
     dbus_targets: BTreeSet<String>,
 }
@@ -39,6 +40,23 @@ impl Inventory {
 
     pub fn has_system_input(&self) -> bool {
         !self.composites.is_empty() && !self.dbus_targets.is_empty()
+    }
+
+    pub fn log(&self) {
+        println!("InputPlumber service owner: {}", self.service_owner);
+        for composite in &self.composites {
+            println!("Composite: {}", composite.name);
+            println!("  runtime path: {}", composite.path);
+        }
+        for target in &self.dbus_targets {
+            println!("  runtime D-Bus target: {target}");
+        }
+
+        println!(
+            "Discovered {} composite device(s) and {} normalized D-Bus target(s).",
+            self.composite_count(),
+            self.target_count()
+        );
     }
 }
 
@@ -58,15 +76,8 @@ pub struct SystemInputMonitor {
 }
 
 impl SystemInputMonitor {
-    pub async fn next(&mut self) -> SystemInputEvent {
-        if let Some(event) = self.receiver.recv().await {
-            return event;
-        }
-
-        eprintln!(
-            "All InputPlumber event listeners stopped; continuing without system input supervision."
-        );
-        std::future::pending::<SystemInputEvent>().await
+    pub async fn next(&mut self) -> Option<SystemInputEvent> {
+        self.receiver.recv().await
     }
 }
 
@@ -84,6 +95,15 @@ impl InputPlumber {
     }
 
     pub async fn discover(&self) -> Result<Inventory> {
+        let bus = Proxy::new(
+            &self.connection,
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+        )
+        .await?;
+        let service_owner: String = bus.call("GetNameOwner", &(SERVICE)).await?;
+
         let object_manager = ObjectManagerProxy::builder(&self.connection)
             .destination(SERVICE)?
             .path(ROOT)?
@@ -112,15 +132,9 @@ impl InputPlumber {
             .await?;
 
             let name: String = proxy.get_property("Name").await?;
-            let persistent_id: String = proxy.get_property("PersistentId").await?;
             let targets: Vec<String> = proxy.get_property("DbusDevices").await?;
 
-            println!("Composite: {name}");
-            println!("  runtime path: {path}");
-            println!("  persistent ID: {persistent_id}");
-
             for target in targets {
-                println!("  runtime D-Bus target: {target}");
                 dbus_targets.insert(target);
             }
 
@@ -130,17 +144,12 @@ impl InputPlumber {
             });
         }
 
-        if composites.is_empty() {
-            eprintln!(
-                "InputPlumber currently reports no composite devices; continuing without system input."
-            );
-        } else if dbus_targets.is_empty() {
-            eprintln!(
-                "InputPlumber currently reports no normalized D-Bus input targets; continuing without system input."
-            );
-        }
+        // ObjectManager does not promise iteration order. A stable inventory
+        // prevents harmless ordering changes from rebuilding every listener.
+        composites.sort_by(|left, right| left.path.cmp(&right.path));
 
         Ok(Inventory {
+            service_owner,
             composites,
             dbus_targets,
         })
@@ -170,35 +179,39 @@ impl InputPlumber {
         Ok(())
     }
 
-    pub fn monitor_system_input(&self, inventory: &Inventory) -> SystemInputMonitor {
+    pub fn monitor_system_input(
+        &self,
+        inventory: &Inventory,
+        announce: bool,
+    ) -> Option<SystemInputMonitor> {
+        if !inventory.has_system_input() {
+            return None;
+        }
+
         let (sender, receiver) = mpsc::channel(64);
         let mut listeners = JoinSet::new();
 
-        if !inventory.has_system_input() {
-            eprintln!(
-                "Guide supervision deferred: normalized system input is currently unavailable."
-            );
-        } else {
-            for target in &inventory.dbus_targets {
-                let connection = self.connection.clone();
-                let target = target.clone();
-                let sender = sender.clone();
+        for target in &inventory.dbus_targets {
+            let connection = self.connection.clone();
+            let target = target.clone();
+            let sender = sender.clone();
 
-                listeners.spawn(async move {
-                    if let Err(error) =
-                        monitor_system_input_target(connection, target, sender).await
-                    {
+            listeners.spawn(async move {
+                if let Err(error) =
+                    monitor_system_input_target(connection, target, sender, announce).await
+                {
+                    if announce {
                         eprintln!("Input listener failed: {error}");
                     }
-                });
-            }
+                }
+            });
         }
 
         drop(sender);
-        SystemInputMonitor {
+        Some(SystemInputMonitor {
             receiver,
             listeners,
-        }
+        })
     }
 }
 
@@ -206,13 +219,14 @@ async fn monitor_system_input_target(
     connection: Connection,
     target: String,
     sender: mpsc::Sender<SystemInputEvent>,
+    announce: bool,
 ) -> Result<()> {
     let proxy = Proxy::new(&connection, SERVICE, target.as_str(), DBUS_DEVICE_INTERFACE).await?;
     let mut events = proxy.receive_signal("InputEvent").await?;
 
-    println!("Subscribed to {target}");
-    let mut guide = GuideButton::default();
-
+    if announce {
+        println!("Subscribed to {target}");
+    }
     while let Some(signal) = events.next().await {
         let (event, value): (String, f64) = signal.body().deserialize()?;
 
@@ -221,13 +235,11 @@ async fn monitor_system_input_target(
         }
 
         if event == "ui_guide" {
-            let actions = if value > 0.5 {
-                guide.press()
-            } else {
-                guide.release()
+            let input = SystemInputEvent::Guide {
+                target: target.clone(),
+                action: GuideAction::from_input_value(value),
             };
-
-            if !send_guide_actions(&sender, &target, actions).await {
+            if sender.send(input).await.is_err() {
                 return Ok(());
             }
         } else {
@@ -241,38 +253,35 @@ async fn monitor_system_input_target(
     Err(message(format!("D-Bus event stream closed: {target}")))
 }
 
-async fn send_guide_actions(
-    sender: &mpsc::Sender<SystemInputEvent>,
-    target: &str,
-    actions: Vec<GuideAction>,
-) -> bool {
-    for action in actions {
-        let event = SystemInputEvent::Guide {
-            target: target.to_string(),
-            action,
-        };
-        if sender.send(event).await.is_err() {
-            return false;
-        }
-    }
-
-    true
-}
-
 #[cfg(test)]
 mod tests {
-    use super::Inventory;
+    use super::{Composite, Inventory};
     use std::collections::BTreeSet;
 
     #[test]
     fn empty_inventory_is_a_valid_input_unavailable_state() {
-        let inventory = Inventory {
-            composites: Vec::new(),
-            dbus_targets: BTreeSet::new(),
-        };
+        let inventory = Inventory::default();
 
         assert_eq!(inventory.composite_count(), 0);
         assert_eq!(inventory.target_count(), 0);
         assert!(!inventory.has_system_input());
+    }
+
+    #[test]
+    fn inventory_identity_tracks_runtime_paths_and_targets() {
+        let inventory = Inventory {
+            service_owner: ":1.42".to_string(),
+            composites: vec![Composite {
+                path: "/composite0".to_string(),
+                name: "Controller".to_string(),
+            }],
+            dbus_targets: BTreeSet::from(["/target/dbus0".to_string()]),
+        };
+
+        assert_eq!(inventory, inventory.clone());
+        let mut restarted = inventory.clone();
+        restarted.service_owner = ":1.43".to_string();
+        assert_ne!(inventory, restarted);
+        assert!(inventory.has_system_input());
     }
 }
