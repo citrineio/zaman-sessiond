@@ -6,6 +6,7 @@ use crate::inputplumber::{
     INTERCEPT_PASS,
 };
 use crate::menu::MenuController;
+use crate::operations::{OperationIdentity, OperationKind, OperationSlot, StartRejected};
 use crate::registry::ResolvedLaunch;
 use crate::session::{Session, SessionControl, SessionOutcome};
 use crate::systemd::UserSystemd;
@@ -20,6 +21,11 @@ use zbus::{Connection, Proxy};
 
 const MENU_PRESENT_TIMEOUT: Duration = Duration::from_secs(3);
 const INPUT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const LAUNCH_BUDGET: Duration = Duration::from_secs(40);
+const MENU_BUDGET: Duration = Duration::from_secs(3);
+const STOP_BUDGET: Duration = Duration::from_secs(40);
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+const SLOT_TICK: Duration = Duration::from_millis(50);
 
 struct InputRefresh {
     replace_monitor: bool,
@@ -160,6 +166,28 @@ pub async fn monitor_menu_client(
     Err(message("D-Bus NameOwnerChanged stream closed"))
 }
 
+fn current_identity(menu: &MenuController) -> OperationIdentity {
+    OperationIdentity {
+        menu_generation: menu.snapshot().generation,
+    }
+}
+
+fn begin_or_reject(
+    slot: &mut OperationSlot,
+    kind: OperationKind,
+    menu: &MenuController,
+    budget: Duration,
+) -> std::result::Result<(crate::operations::OperationToken, OperationIdentity), String> {
+    let identity = current_identity(menu);
+    match slot.begin(kind, identity, budget, Instant::now().into()) {
+        Ok(token) => Ok((token, identity)),
+        Err(StartRejected::Busy { current }) => {
+            Err(format!("busy: {} in flight", current.as_str()))
+        }
+        Err(StartRejected::ShuttingDown) => Err("shutting down".to_string()),
+    }
+}
+
 pub async fn run_worker(
     mut commands: mpsc::Receiver<ApiCommand>,
     status: SharedStatus,
@@ -175,6 +203,9 @@ pub async fn run_worker(
         INPUT_REFRESH_INTERVAL,
     );
     input_refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut slot = OperationSlot::new();
+    let mut slot_tick = interval_at(Instant::now() + SLOT_TICK, SLOT_TICK);
+    slot_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -185,7 +216,17 @@ pub async fn run_worker(
                             status.fail("worker received a second launch while active");
                             continue;
                         }
+                        let (token, identity) = match begin_or_reject(
+                            &mut slot, OperationKind::Launch, &menu, LAUNCH_BUDGET,
+                        ) {
+                            Ok(pair) => pair,
+                            Err(reason) => {
+                                status.fail(&format!("launch rejected: {reason}"));
+                                continue;
+                            }
+                        };
                         let force_monitor = input_monitor.is_none();
+
                         refresh_system_input(
                             &mut system_input,
                             &mut input_monitor,
@@ -197,15 +238,40 @@ pub async fn run_worker(
                         let (control, controls) = mpsc::channel(8);
                         active_control = Some(control);
                         sessions.spawn(run_session(launch, controls));
+                        let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::Stop) => {
+                        let (token, identity) = match begin_or_reject(
+                            &mut slot, OperationKind::Stop, &menu, STOP_BUDGET,
+                        ) {
+                            Ok(pair) => pair,
+                            Err(reason) => {
+                                status.fail(&format!("stop rejected: {reason}"));
+                                continue;
+                            }
+                        };
                         let _ = close_menu(&menu, &system_input, false, "session-stop").await;
+
                         if let Some(control) = &active_control {
                             status.mark_stopping();
                             let _ = control.send(SessionControl::Stop).await;
                         }
+                        let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::Menu { action, reason, reply }) => {
+                        let kind = match action {
+                            MenuAction::Open => OperationKind::OpenMenu,
+                            MenuAction::Close => OperationKind::CloseMenu,
+                            MenuAction::Toggle if menu.snapshot().open => OperationKind::CloseMenu,
+                            MenuAction::Toggle => OperationKind::OpenMenu,
+                        };
+                        let (token, identity) = match begin_or_reject(&mut slot, kind, &menu, MENU_BUDGET) {
+                            Ok(pair) => pair,
+                            Err(reason) => {
+                                let _ = reply.send(Err(reason));
+                                continue;
+                            }
+                        };
                         let result = handle_menu_action(
                             action,
                             reason,
@@ -216,6 +282,7 @@ pub async fn run_worker(
                         .await
                         .map_err(|error| error.to_string());
                         let _ = reply.send(result);
+                        let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::MenuClientExited) => {
                         if menu.snapshot().open {
@@ -231,13 +298,32 @@ pub async fn run_worker(
                         }
                     }
                     Some(ApiCommand::ExitGame) => {
+                        let (token, identity) = match begin_or_reject(
+                            &mut slot, OperationKind::Stop, &menu, STOP_BUDGET,
+                        ) {
+                            Ok(pair) => pair,
+                            Err(reason) => {
+                                status.fail(&format!("exit-game rejected: {reason}"));
+                                continue;
+                            }
+                        };
                         let _ = close_menu(&menu, &system_input, false, "exit-game").await;
                         if let Some(control) = &active_control {
                             status.mark_stopping();
                             let _ = control.send(SessionControl::ExitGame).await;
+                            let _ = slot.complete(token, identity);
                         }
                     }
                     Some(ApiCommand::Shutdown) => {
+                        let (token, identity) = match begin_or_reject(
+                            &mut slot, OperationKind::PowerOff, &menu, SHUTDOWN_BUDGET,
+                        ) {
+                            Ok(pair) => pair,
+                            Err(reason) => {
+                                status.fail(&format!("shutdown rejected: {reason}"));
+                                continue;
+                            }
+                        };
                         let _ = close_menu(&menu, &system_input, false, "shutdown").await;
                         match &active_control {
                             Some(control) => {
@@ -246,8 +332,15 @@ pub async fn run_worker(
                             }
                             None => power_off().await,
                         }
+                        let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::Quit) | None => {
+                        if let Some(kind) = slot.abort_for_quit() {
+                            println!(
+                                "Quit preempted in-flight operation {}.",
+                                kind.as_str()
+                            );
+                        }
                         let _ = close_menu(&menu, &system_input, false, "daemon-stop").await;
                         if let Some(control) = &active_control {
                             status.mark_stopping();
@@ -306,6 +399,14 @@ pub async fn run_worker(
                     if shutdown {
                         power_off().await;
                     }
+                }
+            }
+            _ = slot_tick.tick() => {
+                if let Some(kind) = slot.check_deadline(Instant::now().into()) {
+                    eprintln!(
+                        "Operation {} exceeded its budget; slot cleared.",
+                        kind.as_str()
+                    );
                 }
             }
         }
@@ -544,7 +645,11 @@ async fn power_off() {
 
 #[cfg(test)]
 mod tests {
-    use super::should_rebuild_input;
+    use super::{
+        begin_or_reject, current_identity, should_rebuild_input, LAUNCH_BUDGET, MENU_BUDGET,
+    };
+    use crate::menu::MenuController;
+    use crate::operations::{CompleteRejected, OperationIdentity, OperationKind, OperationSlot};
 
     #[test]
     fn initial_discovery_is_always_recorded() {
@@ -566,5 +671,81 @@ mod tests {
     fn stable_or_still_empty_inventory_does_not_churn() {
         assert!(!should_rebuild_input(true, false, false, true));
         assert!(!should_rebuild_input(true, false, true, false));
+    }
+
+    #[test]
+    fn begin_or_reject_accepts_empty_slot() {
+        let (menu, _rx) = MenuController::new();
+        let mut slot = OperationSlot::new();
+        let result = begin_or_reject(&mut slot, OperationKind::Launch, &menu, LAUNCH_BUDGET);
+        assert!(result.is_ok());
+        assert!(slot.is_busy());
+    }
+
+    #[test]
+    fn begin_or_reject_reports_busy_with_current_kind() {
+        let (menu, _rx) = MenuController::new();
+        let mut slot = OperationSlot::new();
+        let _ = begin_or_reject(&mut slot, OperationKind::Launch, &menu, LAUNCH_BUDGET);
+        let err = begin_or_reject(&mut slot, OperationKind::Stop, &menu, LAUNCH_BUDGET)
+            .expect_err("expected Busy");
+        assert!(err.contains("busy"));
+        assert!(err.contains("launch"));
+    }
+
+    #[test]
+    fn begin_or_reject_reports_shutting_down() {
+        let (menu, _rx) = MenuController::new();
+        let mut slot = OperationSlot::new();
+        slot.begin_shutdown();
+        let err = begin_or_reject(&mut slot, OperationKind::Launch, &menu, LAUNCH_BUDGET)
+            .expect_err("expected ShuttingDown");
+        assert!(err.contains("shutting down"));
+    }
+
+    #[test]
+    fn current_identity_tracks_menu_generation() {
+        let (menu, _rx) = MenuController::new();
+        assert_eq!(current_identity(&menu).menu_generation, 0);
+        let _ = menu.open("test");
+        assert_eq!(current_identity(&menu).menu_generation, 1);
+    }
+
+    #[test]
+    fn completion_with_captured_identity_succeeds() {
+        let (menu, _rx) = MenuController::new();
+        let mut slot = OperationSlot::new();
+        let (token, identity) =
+            begin_or_reject(&mut slot, OperationKind::Launch, &menu, LAUNCH_BUDGET).unwrap();
+        // The operation itself bumps the menu generation. The captured
+        // identity, not the current one, is what completion validates.
+        let _ = menu.open("during-launch");
+        let kind = slot.complete(token, identity).expect("complete");
+        assert_eq!(kind, OperationKind::Launch);
+        assert!(!slot.is_busy());
+    }
+
+    #[test]
+    fn completion_with_stale_identity_is_rejected() {
+        let (menu, _rx) = MenuController::new();
+        let mut slot = OperationSlot::new();
+        let (token, _identity) =
+            begin_or_reject(&mut slot, OperationKind::Launch, &menu, LAUNCH_BUDGET).unwrap();
+        // Simulate a caller presenting an identity from a different epoch.
+        let stale = OperationIdentity {
+            menu_generation: 999,
+        };
+        let err = slot.complete(token, stale).expect_err("expected rejection");
+        assert_eq!(err, CompleteRejected::IdentityChanged);
+        assert!(slot.is_busy());
+    }
+
+    #[test]
+    fn abort_for_quit_clears_slot() {
+        let (menu, _rx) = MenuController::new();
+        let mut slot = OperationSlot::new();
+        let _ = begin_or_reject(&mut slot, OperationKind::Launch, &menu, MENU_BUDGET);
+        assert_eq!(slot.abort_for_quit(), Some(OperationKind::Launch));
+        assert!(!slot.is_busy());
     }
 }

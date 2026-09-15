@@ -5,6 +5,7 @@ mod error;
 mod guide;
 mod inputplumber;
 mod menu;
+mod operations;
 mod registry;
 mod session;
 mod systemd;
