@@ -11,6 +11,22 @@
     <method name="ToggleMenu"/>
     <method name="Resume"/>
     <method name="ExitGame"/>
+    <method name="Shutdown"/>
+    <method name="GameState"><arg name="game_state" type="s" direction="out"/></method>
+    <method name="MenuContext">
+      <arg name="open" type="b" direction="out"/>
+      <arg name="generation" type="t" direction="out"/>
+      <arg name="return_target" type="s" direction="out"/>
+      <arg name="game_state" type="s" direction="out"/>
+      <arg name="pending" type="b" direction="out"/>
+      <arg name="error" type="s" direction="out"/>
+      <arg name="allowed_actions" type="as" direction="out"/>
+    </method>
+    <method name="RequestMenuAction">
+      <arg name="generation" type="t" direction="in"/>
+      <arg name="action" type="s" direction="in"/>
+    </method>
+    <signal name="MenuContextChanged"><arg name="generation" type="t"/></signal>
     <method name="Status">
       <arg name="state" type="s" direction="out"/>
       <arg name="system_id" type="s" direction="out"/>

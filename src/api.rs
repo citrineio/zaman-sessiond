@@ -3,7 +3,7 @@ use crate::menu::{MenuController, MenuEvent};
 use crate::registry::{Registry, ResolvedLaunch};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::{mpsc, oneshot};
-use zaman_sessiond::contract::{INTERFACE, PATH, VERSION};
+use zaman_sessiond::contract::{MenuContextTuple, INTERFACE, PATH, VERSION};
 use zbus::object_server::SignalEmitter;
 use zbus::{fdo, interface, Connection};
 
@@ -146,6 +146,9 @@ pub async fn publish_menu_events(
                         &(snapshot.generation, snapshot.reason.as_str()),
                     )
                     .await?;
+                signal_emitter
+                    .emit(INTERFACE, "MenuContextChanged", &(snapshot.generation,))
+                    .await?;
             }
             MenuEvent::Closed(snapshot) => {
                 signal_emitter
@@ -154,6 +157,9 @@ pub async fn publish_menu_events(
                         "MenuClosed",
                         &(snapshot.generation, snapshot.reason.as_str()),
                     )
+                    .await?;
+                signal_emitter
+                    .emit(INTERFACE, "MenuContextChanged", &(snapshot.generation,))
                     .await?;
             }
             MenuEvent::Input {
@@ -278,6 +284,49 @@ impl SessionApi {
         // frontend when no game is running (idle power-off).
         self.status.mark_stopping();
         self.send_command(ApiCommand::Shutdown).await
+    }
+
+    #[zbus(out_args(
+        "open",
+        "generation",
+        "return_target",
+        "game_state",
+        "pending",
+        "error",
+        "allowed_actions"
+    ))]
+    async fn menu_context(&self) -> fdo::Result<MenuContextTuple> {
+        Ok(self.menu.context())
+    }
+
+    #[zbus(out_args("game_state"))]
+    async fn game_state(&self) -> fdo::Result<String> {
+        Ok(self.menu.context().3)
+    }
+
+    async fn request_menu_action(&self, generation: u64, action: String) -> fdo::Result<()> {
+        let context = self.menu.context();
+        if context.1 != generation {
+            return Err(fdo::Error::Failed(format!(
+                "stale menu generation {} (current {})",
+                generation, context.1
+            )));
+        }
+        if !context.6.iter().any(|allowed| allowed == &action) {
+            return Err(fdo::Error::Failed(format!(
+                "action '{}' is not allowed in this context",
+                action
+            )));
+        }
+        match action.as_str() {
+            "resume" => self.resume().await,
+            "exit-game" => self.exit_game().await,
+            "shutdown" => self.shutdown().await,
+            other => Err(fdo::Error::Failed(format!(
+                "unknown menu action '{}'",
+                other
+            ))),
+        }
     }
 
     #[zbus(out_args(

@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
+use zaman_sessiond::contract::MenuContextTuple;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Foreground {
@@ -251,6 +252,41 @@ impl MenuController {
         timeout(duration, wait).await.unwrap_or(false)
     }
 
+    /// Derive the current menu context for the renderer.
+    /// pending and error are local to the menu binary; the daemon emits
+    /// false and empty respectively.
+    pub fn context(&self) -> MenuContextTuple {
+        let state = self.lock();
+        let open = state.foreground == Foreground::Menu;
+        let return_target = state
+            .return_target
+            .map(|t| t.as_str().to_string())
+            .unwrap_or_default();
+        let game_state = if state.return_target == Some(ReturnTarget::Game) {
+            "paused"
+        } else {
+            "idle"
+        }
+        .to_string();
+        let mut actions = Vec::new();
+        if open {
+            actions.push("resume".to_string());
+            if state.return_target == Some(ReturnTarget::Game) {
+                actions.push("exit-game".to_string());
+            }
+            actions.push("shutdown".to_string());
+        }
+        (
+            open,
+            state.generation,
+            return_target,
+            game_state,
+            false,
+            String::new(),
+            actions,
+        )
+    }
+
     fn lock(&self) -> MutexGuard<'_, MenuState> {
         self.state
             .lock()
@@ -329,5 +365,35 @@ mod tests {
         let (menu, _) = MenuController::new();
         assert!(!menu.close("duplicate", false));
         assert_eq!(menu.snapshot().foreground, Foreground::Library);
+    }
+
+    #[test]
+    fn context_lists_resume_and_shutdown_in_library() {
+        let (menu, _) = MenuController::new();
+        menu.open("manual");
+        let context = menu.context();
+        assert!(context.0);
+        assert_eq!(context.2, "library");
+        assert_eq!(context.3, "idle");
+        assert_eq!(context.6, vec!["resume", "shutdown"]);
+    }
+
+    #[test]
+    fn context_lists_resume_exit_game_and_shutdown_in_game() {
+        let (menu, _) = MenuController::new();
+        menu.game_started();
+        menu.open("manual");
+        let context = menu.context();
+        assert_eq!(context.2, "game");
+        assert_eq!(context.3, "paused");
+        assert_eq!(context.6, vec!["resume", "exit-game", "shutdown"]);
+    }
+
+    #[test]
+    fn context_when_closed_has_no_allowed_actions() {
+        let (menu, _) = MenuController::new();
+        let context = menu.context();
+        assert!(!context.0);
+        assert!(context.6.is_empty());
     }
 }
