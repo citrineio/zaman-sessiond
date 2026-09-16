@@ -274,6 +274,7 @@ impl MenuController {
             if state.return_target == Some(ReturnTarget::Game) {
                 actions.push("exit-game".to_string());
             }
+            actions.push("reboot".to_string());
             actions.push("shutdown".to_string());
         }
         (
@@ -368,25 +369,25 @@ mod tests {
     }
 
     #[test]
-    fn context_lists_resume_and_shutdown_in_library() {
+    fn context_lists_resume_reboot_and_shutdown_in_library() {
         let (menu, _) = MenuController::new();
         menu.open("manual");
         let context = menu.context();
         assert!(context.0);
         assert_eq!(context.2, "library");
         assert_eq!(context.3, "idle");
-        assert_eq!(context.6, vec!["resume", "shutdown"]);
+        assert_eq!(context.6, vec!["resume", "reboot", "shutdown"]);
     }
 
     #[test]
-    fn context_lists_resume_exit_game_and_shutdown_in_game() {
+    fn context_lists_resume_exit_game_reboot_and_shutdown_in_game() {
         let (menu, _) = MenuController::new();
         menu.game_started();
         menu.open("manual");
         let context = menu.context();
         assert_eq!(context.2, "game");
         assert_eq!(context.3, "paused");
-        assert_eq!(context.6, vec!["resume", "exit-game", "shutdown"]);
+        assert_eq!(context.6, vec!["resume", "exit-game", "reboot", "shutdown"]);
     }
 
     #[test]

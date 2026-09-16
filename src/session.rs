@@ -25,6 +25,7 @@ pub enum SessionOutcome {
     StopRequested,
     ExitGameRequested,
     ShutdownRequested,
+    RebootRequested,
 }
 
 impl fmt::Display for SessionOutcome {
@@ -33,6 +34,7 @@ impl fmt::Display for SessionOutcome {
             Self::GameExited => write!(formatter, "game exited normally"),
             Self::StopRequested => write!(formatter, "stop requested by the session service"),
             Self::ExitGameRequested => write!(formatter, "exit requested from the system menu"),
+            Self::RebootRequested => write!(formatter, "reboot requested from the system menu"),
             Self::ShutdownRequested => {
                 write!(formatter, "shutdown requested from the system menu")
             }
@@ -45,6 +47,18 @@ pub enum SessionControl {
     Stop,
     ExitGame,
     Shutdown,
+    Reboot,
+}
+
+impl SessionControl {
+    fn outcome(self) -> SessionOutcome {
+        match self {
+            Self::Stop => SessionOutcome::StopRequested,
+            Self::ExitGame => SessionOutcome::ExitGameRequested,
+            Self::Shutdown => SessionOutcome::ShutdownRequested,
+            Self::Reboot => SessionOutcome::RebootRequested,
+        }
+    }
 }
 
 pub struct Session {
@@ -83,11 +97,7 @@ impl Session {
                     break game_exit.map(|()| SessionOutcome::GameExited);
                 }
                 control = controls.recv() => {
-                    break Ok(match control {
-                        Some(SessionControl::ExitGame) => SessionOutcome::ExitGameRequested,
-                        Some(SessionControl::Shutdown) => SessionOutcome::ShutdownRequested,
-                        Some(SessionControl::Stop) | None => SessionOutcome::StopRequested,
-                    });
+                    break Ok(control.unwrap_or(SessionControl::Stop).outcome());
                 }
             }
         };
@@ -128,10 +138,44 @@ fn combine_stop(
 
 #[cfg(test)]
 mod tests {
-    use super::SessionState;
+    use super::*;
 
     #[test]
     fn idle_is_the_initial_public_state() {
         assert_eq!(SessionState::Idle.to_string(), "Idle");
+    }
+
+    #[test]
+    fn reboot_requires_a_successful_game_stop() {
+        assert_eq!(
+            combine_stop(Ok(SessionOutcome::RebootRequested), Ok(())).unwrap(),
+            SessionOutcome::RebootRequested
+        );
+        assert!(combine_stop(
+            Ok(SessionOutcome::RebootRequested),
+            Err(message("stop failed"))
+        )
+        .is_err());
+        assert!(combine_stop(Err(message("event failed")), Ok(())).is_err());
+    }
+
+    #[test]
+    fn reboot_control_selects_reboot_outcome() {
+        assert_eq!(
+            SessionControl::Reboot.outcome(),
+            SessionOutcome::RebootRequested
+        );
+        assert_eq!(
+            SessionControl::Shutdown.outcome(),
+            SessionOutcome::ShutdownRequested
+        );
+        assert_eq!(
+            SessionControl::ExitGame.outcome(),
+            SessionOutcome::ExitGameRequested
+        );
+        assert_eq!(
+            SessionControl::Stop.outcome(),
+            SessionOutcome::StopRequested
+        );
     }
 }

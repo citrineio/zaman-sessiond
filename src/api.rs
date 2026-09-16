@@ -25,6 +25,7 @@ pub enum ApiCommand {
     },
     MenuClientExited,
     ExitGame,
+    Reboot,   // reboot the SYSTEM after graceful game stop
     Shutdown, // power off the SYSTEM via logind
     Quit,     // shut down the DAEMON only
 }
@@ -279,6 +280,15 @@ impl SessionApi {
         self.send_command(ApiCommand::ExitGame).await
     }
 
+    async fn reboot(&self) -> fdo::Result<()> {
+        self.status.mark_stopping();
+        if let Err(error) = self.send_command(ApiCommand::Reboot).await {
+            self.status.fail(format!("reboot request failed: {error}"));
+            return Err(error);
+        }
+        Ok(())
+    }
+
     async fn shutdown(&self) -> fdo::Result<()> {
         // No require_open_menu(): shutdown must also work from the
         // frontend when no game is running (idle power-off).
@@ -306,21 +316,11 @@ impl SessionApi {
 
     async fn request_menu_action(&self, generation: u64, action: String) -> fdo::Result<()> {
         let context = self.menu.context();
-        if context.1 != generation {
-            return Err(fdo::Error::Failed(format!(
-                "stale menu generation {} (current {})",
-                generation, context.1
-            )));
-        }
-        if !context.6.iter().any(|allowed| allowed == &action) {
-            return Err(fdo::Error::Failed(format!(
-                "action '{}' is not allowed in this context",
-                action
-            )));
-        }
+        validate_menu_action(&context, generation, &action)?;
         match action.as_str() {
             "resume" => self.resume().await,
             "exit-game" => self.exit_game().await,
+            "reboot" => self.reboot().await,
             "shutdown" => self.shutdown().await,
             other => Err(fdo::Error::Failed(format!(
                 "unknown menu action '{}'",
@@ -382,6 +382,12 @@ impl SessionApi {
     }
 
     #[zbus(signal)]
+    async fn menu_context_changed(
+        signal_emitter: &SignalEmitter<'_>,
+        generation: u64,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
     async fn menu_opened(
         signal_emitter: &SignalEmitter<'_>,
         generation: u64,
@@ -402,6 +408,26 @@ impl SessionApi {
         event: &str,
         value: f64,
     ) -> zbus::Result<()>;
+}
+
+fn validate_menu_action(
+    context: &MenuContextTuple,
+    generation: u64,
+    action: &str,
+) -> fdo::Result<()> {
+    if context.1 != generation {
+        return Err(fdo::Error::Failed(format!(
+            "stale menu generation {} (current {})",
+            generation, context.1
+        )));
+    }
+    if !context.6.iter().any(|allowed| allowed == action) {
+        return Err(fdo::Error::Failed(format!(
+            "action '{}' is not allowed in this context",
+            action
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -434,5 +460,26 @@ mod tests {
         assert!(status.reserve(&launch).is_err());
         status.fail("test failure");
         status.reserve(&launch).expect("retry after failure");
+    }
+
+    #[test]
+    fn reboot_guard_accepts_current_open_context_only() {
+        let (menu, _) = crate::menu::MenuController::new();
+        assert!(super::validate_menu_action(&menu.context(), 0, "reboot").is_err());
+        for game in [false, true] {
+            if game {
+                menu.game_started();
+            }
+            menu.open("test");
+            let context = menu.context();
+            assert!(super::validate_menu_action(&context, context.1, "reboot").is_ok());
+            assert!(super::validate_menu_action(&context, context.1 - 1, "reboot").is_err());
+            assert!(super::validate_menu_action(&context, context.1, "unsupported").is_err());
+            let mut omitted = context.clone();
+            omitted.6.retain(|action| action != "reboot");
+            assert!(super::validate_menu_action(&omitted, context.1, "reboot").is_err());
+            menu.close("test", game);
+            assert!(super::validate_menu_action(&menu.context(), context.1, "reboot").is_err());
+        }
     }
 }

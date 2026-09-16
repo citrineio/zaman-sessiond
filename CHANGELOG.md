@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.5] - 2026-09-16
+
+- Add Reboot to the library and active-game menus, the D-Bus API, and
+  `zamanctl reboot`.
+- Reuse the existing graceful SIGINT game-stop path before successful session
+  completion requests reboot; failed session completion does not reboot.
+- Record logind power-action failures in status and the journal.
+- Fit the fourth game-menu row and move pending/error text to the right panel.
+- Declare the existing MenuContextChanged signal for runtime introspection.
+- Correct smoke-test version matching to read Cargo.toml and capture complete
+  CLI replies to avoid broken-pipe panics and detect CLI failures.
+- Installed and hardware-accepted on the Q6A: library reboot, in-game reboot
+  with save preservation, frontend return, menu layout/navigation, and shutdown
+  in both contexts. User confirmed all requested checks work with no quirks.
+
 ## [0.6.4] - 2026-09-16
 
 - Restore the amber two-column system menu and right-hand context panel.

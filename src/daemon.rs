@@ -331,6 +331,30 @@ pub async fn run_worker(
                             let _ = slot.complete(token, identity);
                         }
                     }
+                    Some(ApiCommand::Reboot) => {
+                        let (token, identity) = match begin_or_reject(
+                            &mut slot, OperationKind::Reboot, &menu, SHUTDOWN_BUDGET,
+                        ) {
+                            Ok(pair) => pair,
+                            Err(reason) => {
+                                status.fail(&format!("reboot rejected: {reason}"));
+                                continue;
+                            }
+                        };
+                        let _ = close_menu(&menu, &system_input, false, "reboot").await;
+                        match &active_control {
+                            Some(control) => {
+                                status.mark_stopping();
+                                if let Err(error) = control.send(SessionControl::Reboot).await {
+                                    let error = format!("reboot control send failed: {error}");
+                                    eprintln!("{error}");
+                                    status.fail(error);
+                                }
+                            }
+                            None => request_system_power(&status, "Reboot").await,
+                        }
+                        let _ = slot.complete(token, identity);
+                    }
                     Some(ApiCommand::Shutdown) => {
                         let (token, identity) = match begin_or_reject(
                             &mut slot, OperationKind::PowerOff, &menu, SHUTDOWN_BUDGET,
@@ -347,7 +371,7 @@ pub async fn run_worker(
                                 status.mark_stopping();
                                 let _ = control.send(SessionControl::Shutdown).await;
                             }
-                            None => power_off().await,
+                            None => request_system_power(&status, "PowerOff").await,
                         }
                         let _ = slot.complete(token, identity);
                     }
@@ -420,7 +444,7 @@ pub async fn run_worker(
             }
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 if let Some(result) = completed {
-                    let shutdown = matches!(result, Ok(Ok(SessionOutcome::ShutdownRequested)));
+                    let power_method = requested_power_method(&result);
                     record_completion(&status, result);
                     active_control = None;
                     if menu.game_ended("game-ended") {
@@ -428,8 +452,8 @@ pub async fn run_worker(
                             eprintln!("Failed to restore library input after game exit: {error}");
                         }
                     }
-                    if shutdown {
-                        power_off().await;
+                    if let Some(method) = power_method {
+                        request_system_power(&status, method).await;
                     }
                 }
             }
@@ -651,8 +675,18 @@ fn record_completion(
     }
 }
 
-async fn power_off() {
-    async fn inner() -> zbus::Result<()> {
+fn requested_power_method(
+    completion: &std::result::Result<Result<SessionOutcome>, tokio::task::JoinError>,
+) -> Option<&'static str> {
+    match completion {
+        Ok(Ok(SessionOutcome::RebootRequested)) => Some("Reboot"),
+        Ok(Ok(SessionOutcome::ShutdownRequested)) => Some("PowerOff"),
+        _ => None,
+    }
+}
+
+async fn request_system_power(status: &SharedStatus, method: &'static str) {
+    async fn inner(method: &'static str) -> zbus::Result<()> {
         let connection = zbus::Connection::system().await?;
         let proxy = zbus::Proxy::new(
             &connection,
@@ -661,11 +695,13 @@ async fn power_off() {
             "org.freedesktop.login1.Manager",
         )
         .await?;
-        proxy.call::<_, _, ()>("PowerOff", &(true)).await
+        proxy.call::<_, _, ()>(method, &(true)).await
     }
 
-    if let Err(error) = inner().await {
-        eprintln!("System power-off failed: {error}");
+    if let Err(error) = inner(method).await {
+        let error = format!("System {method} failed: {error}");
+        eprintln!("{error}");
+        status.fail(error);
     }
 }
 
@@ -773,5 +809,33 @@ mod tests {
         let _ = begin_or_reject(&mut slot, OperationKind::Launch, &menu, MENU_BUDGET);
         assert_eq!(slot.abort_for_quit(), Some(OperationKind::Launch));
         assert!(!slot.is_busy());
+    }
+
+    #[tokio::test]
+    async fn power_dispatch_requires_successful_session_completion() {
+        use crate::error::message;
+        use crate::session::SessionOutcome;
+        assert_eq!(
+            super::requested_power_method(&Ok(Ok(SessionOutcome::RebootRequested))),
+            Some("Reboot")
+        );
+        assert_eq!(
+            super::requested_power_method(&Ok(Ok(SessionOutcome::ShutdownRequested))),
+            Some("PowerOff")
+        );
+        for outcome in [
+            SessionOutcome::GameExited,
+            SessionOutcome::StopRequested,
+            SessionOutcome::ExitGameRequested,
+        ] {
+            assert_eq!(super::requested_power_method(&Ok(Ok(outcome))), None);
+        }
+        assert_eq!(
+            super::requested_power_method(&Ok(Err(message("stop failed")))),
+            None
+        );
+        let task = tokio::spawn(std::future::pending::<crate::error::Result<SessionOutcome>>());
+        task.abort();
+        assert_eq!(super::requested_power_method(&task.await), None);
     }
 }

@@ -24,6 +24,10 @@ async fn main() -> Result<()> {
             let version: String = proxy.call("Version", &()).await?;
             println!("{version}");
         }
+        [command] if command == "reboot" => {
+            let _: () = proxy.call("Reboot", &()).await?;
+            println!("Reboot requested; check status/journal if the system remains running.");
+        }
         [command] if command == "stop" => {
             let _: () = proxy.call("Stop", &()).await?;
             wait_until_finished(&proxy, false).await?;
@@ -56,7 +60,7 @@ async fn main() -> Result<()> {
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: zamanctl status | menu {open|close|toggle} | menu-status | version | resume | exit-game | stop | launch SYSTEM_ID /absolute/ROM",
+                "usage: zamanctl status | menu {open|close|toggle} | menu-status | version | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
             )
             .into())
         }

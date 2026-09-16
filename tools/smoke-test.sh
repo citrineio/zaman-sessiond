@@ -9,6 +9,11 @@ SERVICE="com.kawnelectro.Zaman.Session1"
 PATH_OBJECT="/com/kawnelectro/Zaman/Session1"
 INTERFACE="com.kawnelectro.Zaman.Session1"
 UNIT="zaman-game.service"
+EXPECTED_VERSION=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$REPO_DIR/Cargo.toml" | head -n 1)
+if [ -z "$EXPECTED_VERSION" ]; then
+    echo "FAIL: unable to read package version from Cargo.toml"
+    exit 1
+fi
 
 bus_name_owned() {
     result=$(busctl --user call \
@@ -17,6 +22,13 @@ bus_name_owned() {
         org.freedesktop.DBus \
         NameHasOwner s "$1" 2>/dev/null) || return 1
     [ "$result" = "b true" ]
+}
+
+# Capture the complete reply before matching it. An early-exiting grep can
+# otherwise close zamanctl stdout and make Rust println! panic with EPIPE.
+ctl_contains() {
+    ctl_output=$("$CTL" "$1") || return 1
+    printf '%s\n' "$ctl_output" | grep -F -- "$2" >/dev/null
 }
 
 cd "$REPO_DIR"
@@ -151,23 +163,24 @@ if ! INTROSPECTION=$(busctl --user introspect "$SERVICE" "$PATH_OBJECT" "$INTERF
     cat "$DAEMON_LOG"
     exit 1
 fi
-for member in CloseMenu ExitGame ForegroundStatus Launch MenuClosed MenuInput MenuOpened MenuPresented MenuStatus OpenMenu Resume Status Stop ToggleMenu Version; do
-    if ! printf '%s\n' "$INTROSPECTION" | grep -Fq ".$member"; then
+for member in Reboot Shutdown MenuContext RequestMenuAction MenuContextChanged CloseMenu ExitGame ForegroundStatus Launch MenuClosed MenuInput MenuOpened MenuPresented MenuStatus OpenMenu Resume Status Stop ToggleMenu Version; do
+    if ! printf '%s\n' "$INTROSPECTION" | grep -F ".$member" >/dev/null; then
         echo "FAIL: D-Bus member $member is missing"
         printf '%s\n' "$INTROSPECTION"
         exit 1
     fi
 done
-if [ "$("$CTL" version)" != "0.6.2" ]; then
-    echo "FAIL: wrong zaman-sessiond version"
+ACTUAL_VERSION=$("$CTL" version)
+if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+    echo "FAIL: expected zaman-sessiond $EXPECTED_VERSION, got $ACTUAL_VERSION"
     exit 1
 fi
-if ! "$CTL" status | grep -Fq "foreground=library"; then
+if ! ctl_contains status "foreground=library"; then
     echo "FAIL: initial foreground is not the library"
     "$CTL" status
     exit 1
 fi
-if ! "$CTL" menu-status | grep -Fq "menu=closed"; then
+if ! ctl_contains menu-status "menu=closed"; then
     echo "FAIL: initial menu state is not closed"
     "$CTL" menu-status
     exit 1
@@ -179,12 +192,12 @@ fi
 
 echo "[5/8] Checking registry-backed natural exit"
 "$CTL" launch fast "$ROM_DIR/Fast Game.nes" >"$FAST_LOG" 2>&1
-if ! "$CTL" status | grep -Fq "state=Idle"; then
+if ! ctl_contains status "state=Idle"; then
     echo "FAIL: daemon did not return to Idle after natural exit"
     cat "$DAEMON_LOG"
     exit 1
 fi
-if ! "$CTL" status | grep -Fq "result=game exited normally"; then
+if ! ctl_contains status "result=game exited normally"; then
     echo "FAIL: natural exit result was not recorded"
     "$CTL" status
     exit 1
@@ -227,7 +240,7 @@ if systemctl --user is-active --quiet "$UNIT"; then
     cat "$DAEMON_LOG"
     exit 1
 fi
-if ! "$CTL" status | grep -Fq "state=Idle"; then
+if ! ctl_contains status "state=Idle"; then
     echo "FAIL: daemon did not return to Idle"
     "$CTL" status
     exit 1
@@ -246,4 +259,4 @@ DAEMON_PID=""
 OWNS_TEST_UNIT=0
 
 cat "$DAEMON_LOG"
-echo "PASS: zaman-sessiond v0.6.2 D-Bus, foreground contract, and registry smoke test"
+echo "PASS: zaman-sessiond v$EXPECTED_VERSION D-Bus, foreground contract, and registry smoke test"

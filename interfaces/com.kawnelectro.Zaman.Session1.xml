@@ -12,6 +12,7 @@
     <method name="Resume"/>
     <method name="ExitGame"/>
     <method name="Shutdown"/>
+    <method name="Reboot"/>
     <method name="GameState"><arg name="game_state" type="s" direction="out"/></method>
     <method name="MenuContext">
       <arg name="open" type="b" direction="out"/>

@@ -26,6 +26,7 @@ pub enum OperationKind {
     Launch,
     Stop,
     PowerOff,
+    Reboot,
 }
 
 impl OperationKind {
@@ -36,6 +37,7 @@ impl OperationKind {
             Self::Launch => "launch",
             Self::Stop => "stop",
             Self::PowerOff => "power-off",
+            Self::Reboot => "reboot",
         }
     }
 }

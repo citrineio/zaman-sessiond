@@ -38,6 +38,7 @@ enum MenuCommand {
     Close,
     ExitGame,
     Shutdown,
+    Reboot,
 }
 impl MenuCommand {
     fn action(self) -> &'static str {
@@ -45,6 +46,7 @@ impl MenuCommand {
             Self::Close => "resume",
             Self::ExitGame => "exit-game",
             Self::Shutdown => "shutdown",
+            Self::Reboot => "reboot",
         }
     }
     fn method(self) -> &'static str {
@@ -52,6 +54,7 @@ impl MenuCommand {
             Self::Close => "CloseMenu",
             Self::ExitGame => "ExitGame",
             Self::Shutdown => "Shutdown",
+            Self::Reboot => "Reboot",
         }
     }
 }
@@ -79,6 +82,15 @@ fn items(context: &MenuContextTuple) -> Vec<MenuItem> {
                 label: "Exit Game",
                 detail: "Close the current game session",
                 command: MenuCommand::ExitGame,
+            }),
+            "reboot" => Some(MenuItem {
+                label: "Reboot",
+                detail: if context.2 == "game" {
+                    "Exit game and restart Zaman."
+                } else {
+                    "Restart Zaman."
+                },
+                command: MenuCommand::Reboot,
             }),
             "shutdown" => Some(MenuItem {
                 label: "Shut Down",
@@ -223,6 +235,39 @@ impl LoadedFonts {
     }
 }
 
+// Both contexts end their rows before the footer. Status/error text lives
+// in the right-hand panel, separate from the selectable rows.
+struct RowLayout {
+    top: f32,
+    height: f32,
+    gap: f32,
+    detail_y: f32,
+}
+
+impl RowLayout {
+    fn new(count: usize) -> Self {
+        if count > 3 {
+            Self {
+                top: 324.0,
+                height: 126.0,
+                gap: 18.0,
+                detail_y: 82.0,
+            }
+        } else {
+            Self {
+                top: 369.0,
+                height: 156.0,
+                gap: 27.0,
+                detail_y: 99.0,
+            }
+        }
+    }
+
+    fn y(&self, index: usize) -> f32 {
+        self.top + index as f32 * (self.height + self.gap)
+    }
+}
+
 struct MenuSurface {
     canvas: Canvas<Window>,
     model: MenuModel,
@@ -330,18 +375,19 @@ impl MenuSurface {
             .fill_rect(Rect::new(px(99.0), py(285.0), pw(975.0), ph(2.0)))
             .map_err(other)?;
 
+        let rows = RowLayout::new(self.model.items.len());
         for (index, item) in self.model.items.iter().enumerate() {
-            let y = py(369.0) + (index as f32 * 183.0 * scale).round() as i32;
+            let y = py(rows.y(index));
             let selected = index == self.model.selected;
             self.canvas
                 .set_draw_color(if selected { SAND } else { JET });
             self.canvas
-                .fill_rect(Rect::new(px(96.0), y, pw(978.0), ph(156.0)))
+                .fill_rect(Rect::new(px(96.0), y, pw(978.0), ph(rows.height)))
                 .map_err(other)?;
             if !selected {
                 self.canvas.set_draw_color(CARAMEL);
                 self.canvas
-                    .draw_rect(Rect::new(px(96.0), y, pw(978.0), ph(156.0)))
+                    .draw_rect(Rect::new(px(96.0), y, pw(978.0), ph(rows.height)))
                     .map_err(other)?;
             }
             let color = if selected { JET } else { BONE };
@@ -351,7 +397,7 @@ impl MenuSurface {
                 item.label,
                 color,
                 px(135.0),
-                y + (13.0 * scale).round() as i32,
+                y + (8.0 * scale).round() as i32,
             )?;
             draw_text(
                 &mut self.canvas,
@@ -359,7 +405,7 @@ impl MenuSurface {
                 item.detail,
                 color,
                 px(138.0),
-                y + (99.0 * scale).round() as i32,
+                y + (rows.detail_y * scale).round() as i32,
             )?;
             if selected {
                 draw_text(
@@ -368,7 +414,7 @@ impl MenuSurface {
                     ">",
                     JET,
                     px(1011.0),
-                    y + (63.0 * scale).round() as i32,
+                    y + ((rows.height - 36.0) * 0.5 * scale).round() as i32,
                 )?;
             }
         }
@@ -423,8 +469,8 @@ impl MenuSurface {
                 &detail,
                 "Applying selection...",
                 SAND,
-                px(99.0),
-                py(777.0),
+                px(1278.0),
+                py(666.0),
             )?;
         } else if error.is_some() {
             // Detailed service diagnostics remain in status/journal; keep the
@@ -434,10 +480,10 @@ impl MenuSurface {
                 &detail,
                 "Action could not complete. Please try again.",
                 SAND,
-                px(99.0),
-                py(777.0),
-                pw(975.0),
-                ph(96.0),
+                px(1278.0),
+                py(666.0),
+                pw(525.0),
+                ph(132.0),
             )?;
         }
 
@@ -654,7 +700,7 @@ fn other(error: impl ToString) -> io::Error {
 // controller access, and not a graphical/hardware acceptance test.
 fn preview(args: &[String]) -> Result<()> {
     if args.len() != 6 {
-        return Err(other("usage: zaman-menu --preview library|game|exit|shutdown|error|pending WIDTH HEIGHT /absolute/output.bmp STATE").into());
+        return Err(other("usage: zaman-menu --preview library|game|exit|reboot|shutdown|error|pending WIDTH HEIGHT /absolute/output.bmp STATE").into());
     }
     let width: u32 = args[2].parse()?;
     let height: u32 = args[3].parse()?;
@@ -689,15 +735,21 @@ fn preview(args: &[String]) -> Result<()> {
         }
         .into(),
         if game {
-            vec!["resume".into(), "exit-game".into(), "shutdown".into()]
+            vec![
+                "resume".into(),
+                "exit-game".into(),
+                "reboot".into(),
+                "shutdown".into(),
+            ]
         } else {
-            vec!["resume".into(), "shutdown".into()]
+            vec!["resume".into(), "reboot".into(), "shutdown".into()]
         },
     );
     let mut model = MenuModel::new(&context);
     match args[1].as_str() {
         "exit" => model.selected = 1,
-        "shutdown" => model.selected = if game { 2 } else { 1 },
+        "reboot" => model.selected = if game { 2 } else { 1 },
+        "shutdown" => model.selected = if game { 3 } else { 2 },
         _ => {}
     }
     let (out_w, out_h) = canvas.output_size().map_err(other)?;
@@ -742,29 +794,36 @@ mod tests {
             false,
             String::new(),
             if game {
-                vec!["resume".into(), "exit-game".into(), "shutdown".into()]
+                vec![
+                    "resume".into(),
+                    "exit-game".into(),
+                    "reboot".into(),
+                    "shutdown".into(),
+                ]
             } else {
-                vec!["resume".into(), "shutdown".into()]
+                vec!["resume".into(), "reboot".into(), "shutdown".into()]
             },
         )
     }
 
     #[test]
-    fn library_lists_resume_and_shutdown() {
+    fn library_lists_resume_reboot_and_shutdown() {
         let items = items(&context(false));
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert_eq!(items[0].command, MenuCommand::Close);
-        assert_eq!(items[1].command, MenuCommand::Shutdown);
-        assert_eq!(items[1].label, "Shut Down");
+        assert_eq!(items[1].command, MenuCommand::Reboot);
+        assert_eq!(items[2].command, MenuCommand::Shutdown);
+        assert_eq!(items[2].label, "Shut Down");
     }
 
     #[test]
-    fn game_lists_resume_exit_and_shutdown() {
+    fn game_lists_resume_exit_reboot_and_shutdown() {
         let items = items(&context(true));
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
         assert_eq!(items[0].command, MenuCommand::Close);
         assert_eq!(items[1].command, MenuCommand::ExitGame);
-        assert_eq!(items[2].command, MenuCommand::Shutdown);
+        assert_eq!(items[2].command, MenuCommand::Reboot);
+        assert_eq!(items[3].command, MenuCommand::Shutdown);
     }
 
     #[test]
@@ -801,29 +860,54 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_is_reachable_by_navigation_in_game_context() {
-        let mut m = MenuModel::new(&context(true));
-        m.normalized_input("ui_down", 1.0);
-        m.normalized_input("ui_down", 0.0);
-        m.normalized_input("ui_down", 1.0);
-        m.normalized_input("ui_down", 0.0);
-        assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
-        assert_eq!(
-            m.normalized_input("ui_accept", 0.0),
-            ModelEffect::Activate(MenuCommand::Shutdown)
-        );
+    fn reboot_is_reachable_and_activates_once_on_release_in_both_contexts() {
+        for game in [false, true] {
+            let mut m = MenuModel::new(&context(game));
+            for _ in 0..if game { 2 } else { 1 } {
+                m.normalized_input("ui_down", 1.0);
+                m.normalized_input("ui_down", 0.0);
+            }
+            assert_eq!(m.normalized_input("ui_accept", 0.0), ModelEffect::None);
+            assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
+            assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
+            assert_eq!(
+                m.normalized_input("ui_accept", 0.0),
+                ModelEffect::Activate(MenuCommand::Reboot)
+            );
+            assert_eq!(m.normalized_input("ui_accept", 0.0), ModelEffect::None);
+        }
     }
 
     #[test]
-    fn shutdown_is_the_second_item_in_library_context() {
-        let mut m = MenuModel::new(&context(false));
-        m.normalized_input("ui_down", 1.0);
-        m.normalized_input("ui_down", 0.0);
-        assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
-        assert_eq!(
-            m.normalized_input("ui_accept", 0.0),
-            ModelEffect::Activate(MenuCommand::Shutdown)
-        );
+    fn shutdown_remains_reachable_in_both_contexts() {
+        for game in [false, true] {
+            let mut m = MenuModel::new(&context(game));
+            m.normalized_input("ui_up", 1.0);
+            m.normalized_input("ui_up", 0.0);
+            assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
+            assert_eq!(
+                m.normalized_input("ui_accept", 0.0),
+                ModelEffect::Activate(MenuCommand::Shutdown)
+            );
+        }
+    }
+
+    #[test]
+    fn rows_fit_above_footer_at_supported_output_sizes() {
+        for count in [3, 4] {
+            let layout = RowLayout::new(count);
+            assert!(layout.top >= 300.0);
+            assert!(layout.height >= 120.0);
+            for (width, height) in [(1280.0_f32, 800.0_f32), (1920.0, 1080.0), (2560.0, 1440.0)] {
+                let scale = (width / DESIGN_WIDTH).min(height / DESIGN_HEIGHT);
+                let end = layout.y(count - 1) + layout.height;
+                assert!((end * scale).round() < (936.0 * scale).round());
+                assert!(layout.detail_y + 36.0 <= layout.height);
+                for index in 1..count {
+                    assert!(layout.y(index - 1) + layout.height < layout.y(index));
+                }
+            }
+        }
     }
 
     #[test]
@@ -849,21 +933,23 @@ mod tests {
         let mut m = MenuModel::new(&context(true));
         assert_eq!(m.normalized_input("ui_down", 0.0), ModelEffect::None);
         m.normalized_input("ui_up", 1.0);
-        assert_eq!(m.selected, 2);
+        assert_eq!(m.selected, 3);
         assert_eq!(m.normalized_input("ui_up", 1.0), ModelEffect::None);
         m.normalized_input("ui_up", 0.0);
         m.normalized_input("ui_up", 1.0);
-        assert_eq!(m.selected, 1);
+        assert_eq!(m.selected, 2);
 
         let mut m = MenuModel::new(&context(false));
         m.navigate(true);
-        assert_eq!(m.selected, 1);
+        assert_eq!(m.selected, 2);
     }
 
     #[test]
     fn command_actions_and_methods_match_dbus_contract() {
         assert_eq!(MenuCommand::Close.action(), "resume");
         assert_eq!(MenuCommand::ExitGame.action(), "exit-game");
+        assert_eq!(MenuCommand::Reboot.action(), "reboot");
+        assert_eq!(MenuCommand::Reboot.method(), "Reboot");
         assert_eq!(MenuCommand::Shutdown.action(), "shutdown");
         assert_eq!(MenuCommand::Close.method(), "CloseMenu");
         assert_eq!(MenuCommand::ExitGame.method(), "ExitGame");

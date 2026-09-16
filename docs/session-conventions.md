@@ -47,3 +47,23 @@ Verify after install:
 ```bash
 zamanctl version   # must print the new number
 
+```
+
+## Current handoff — 0.6.5, 2026-09-16
+
+- Single feature: reboot from the system menu and CLI.
+- Baseline: `0d0d156691dd4c000069c3e64842a1fa38161a7a` (0.6.4).
+- Installed version 0.6.5; INSTALL_PASS, Idle/library, required D-Bus members verified.
+- Backup: `/home/kadhem/zaman-pre-0.6.5.N9pDxX`.
+- Hardware acceptance complete: user confirmed library/game reboot, frontend
+  return, save preservation, menu layout/navigation, and shutdown in both contexts
+  work with no quirks.
+- Release build and synthetic smoke pass were reported. Smoke pipe panics were
+  corrected in the harness; exact unit-test counts were not supplied.
+- Working split: assistant wrote source/tests and inspected patches; user ran
+  formatting/build/test/install and hardware checks. No assistant Rust build.
+- Closeout: run `zaman-0.6.5-closeout.sh`; commit/push status comes from its
+  output, not from this document. No more hardware acceptance gate is added.
+- Full accepted record: `docs/session-0.6.5.md`.
+- Deployment/rollback reference: `docs/deploy-0.6.5.md`.
+- Next feature: Zaman-transfer UI integration; placement/design still open.
