@@ -60,6 +60,7 @@ impl Inventory {
     }
 }
 
+#[derive(Clone)]
 pub struct InputPlumber {
     connection: Connection,
 }

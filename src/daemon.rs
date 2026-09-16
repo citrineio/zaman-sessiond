@@ -66,7 +66,21 @@ impl SystemInput {
     }
 
     async fn refresh(&mut self, mode: u32, force_monitor: bool) -> InputRefresh {
-        match self.try_refresh(mode, force_monitor).await {
+        let inventory = self.input.discover().await;
+        self.finish_discovery(inventory, mode, force_monitor).await
+    }
+
+    async fn finish_discovery(
+        &mut self,
+        inventory: Result<Inventory>,
+        mode: u32,
+        force_monitor: bool,
+    ) -> InputRefresh {
+        let result = match inventory {
+            Ok(inventory) => self.apply_inventory(inventory, mode, force_monitor).await,
+            Err(error) => Err(error),
+        };
+        match result {
             Ok(refresh) => {
                 if self.refresh_error.take().is_some() {
                     println!("InputPlumber supervision recovered.");
@@ -84,8 +98,12 @@ impl SystemInput {
         }
     }
 
-    async fn try_refresh(&mut self, mode: u32, force_monitor: bool) -> Result<InputRefresh> {
-        let inventory = self.input.discover().await?;
+    async fn apply_inventory(
+        &mut self,
+        inventory: Inventory,
+        mode: u32,
+        force_monitor: bool,
+    ) -> Result<InputRefresh> {
         let changed = !self.initialized || inventory != self.inventory;
 
         if !should_rebuild_input(
@@ -195,6 +213,10 @@ pub async fn run_worker(
 ) -> Result<()> {
     let (mut system_input, mut input_monitor) = SystemInput::connect().await?;
     let mut sessions: JoinSet<Result<SessionOutcome>> = JoinSet::new();
+    // Discovery only reads inventory. The worker remains the sole owner of
+    // interception changes and monitor replacement. JoinSet aborts the pending
+    // read when the worker exits.
+    let mut discoveries: JoinSet<Result<Inventory>> = JoinSet::new();
     let mut active_control: Option<mpsc::Sender<SessionControl>> = None;
     let mut guide_buttons = BTreeMap::<String, GuideButton>::new();
     let mut input_listener_loss_reported = false;
@@ -225,15 +247,10 @@ pub async fn run_worker(
                                 continue;
                             }
                         };
-                        let force_monitor = input_monitor.is_none();
-
-                        refresh_system_input(
-                            &mut system_input,
-                            &mut input_monitor,
-                            &mut guide_buttons,
-                            if menu.snapshot().open { INTERCEPT_ALL } else { INTERCEPT_PASS },
-                            force_monitor,
-                        ).await;
+                        // Startup already attempted discovery. Request a fresh
+                        // inventory without holding up input or launching a
+                        // second scan alongside the periodic one.
+                        request_input_discovery(&mut discoveries, &system_input.input);
                         menu.game_started();
                         let (control, controls) = mpsc::channel(8);
                         active_control = Some(control);
@@ -377,14 +394,29 @@ pub async fn run_worker(
                 }
             }
             _ = input_refresh.tick() => {
-                let force_monitor = input_monitor.is_none();
-                refresh_system_input(
-                    &mut system_input,
-                    &mut input_monitor,
-                    &mut guide_buttons,
-                    if menu.snapshot().open { INTERCEPT_ALL } else { INTERCEPT_PASS },
-                    force_monitor,
-                ).await;
+                request_input_discovery(&mut discoveries, &system_input.input);
+            }
+            discovered = discoveries.join_next(), if !discoveries.is_empty() => {
+                if let Some(result) = discovered {
+                    let inventory = match result {
+                        Ok(inventory) => inventory,
+                        Err(error) => Err(message(format!(
+                            "InputPlumber discovery task failed: {error}"
+                        ))),
+                    };
+                    // Resolve mode and listener health now, not when the scan
+                    // started: a menu transition may have occurred meanwhile.
+                    let mode = if menu.snapshot().open { INTERCEPT_ALL } else { INTERCEPT_PASS };
+                    let refresh = system_input.finish_discovery(
+                        inventory,
+                        mode,
+                        input_monitor.is_none(),
+                    ).await;
+                    if refresh.replace_monitor {
+                        input_monitor = refresh.monitor;
+                        guide_buttons.clear();
+                    }
+                }
             }
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 if let Some(result) = completed {
@@ -420,20 +452,14 @@ async fn next_system_input(monitor: &mut Option<SystemInputMonitor>) -> Option<S
     }
 }
 
-async fn refresh_system_input(
-    input: &mut SystemInput,
-    monitor: &mut Option<SystemInputMonitor>,
-    guide_buttons: &mut BTreeMap<String, GuideButton>,
-    mode: u32,
-    force_monitor: bool,
-) {
-    let refresh = input.refresh(mode, force_monitor).await;
-    if !refresh.replace_monitor {
+fn request_input_discovery(discoveries: &mut JoinSet<Result<Inventory>>, input: &InputPlumber) {
+    // Includes completed-but-unconsumed results, so they cannot be overtaken
+    // by a newer discovery. Missed requests are coalesced, not queued.
+    if !discoveries.is_empty() {
         return;
     }
-
-    *monitor = refresh.monitor;
-    guide_buttons.clear();
+    let input = input.clone();
+    discoveries.spawn(async move { input.discover().await });
 }
 
 async fn handle_system_input(

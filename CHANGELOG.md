@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.4] - 2026-09-16
+
+- Restore the amber two-column system menu and right-hand context panel.
+- Fix DPI blur using a 1920x1080 design space and fonts rendered at physical
+  output resolution; cache fonts per menu surface.
+- Add Shut Down to library and game menus.
+- Add the menu context D-Bus surface and generation-guarded action routing,
+  preserving activate-on-release and the MenuPresented handshake.
+- Restore graceful daemon-driven game exit with SIGINT for the transient unit,
+  allowing the emulator to preserve saves.
+- Fix navigation stalls by moving periodic controller discovery into a bounded
+  background task; apply results using the current controller interception mode.
+- Remove temporary navigation and render tracing.
+
 Versions newest-first. Each entry corresponds to one development session
 with one feature goal and a findings document under `docs/`.
 

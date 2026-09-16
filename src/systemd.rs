@@ -86,6 +86,7 @@ impl UserSystemd {
             ("Type", Value::new("exec")),
             ("ExecStart", Value::new(exec_start)),
             ("KillMode", Value::new("control-group")),
+            ("KillSignal", Value::new(2_i32)), // SIGINT: Mesen graceful shutdown
             ("TimeoutStopUSec", Value::new(3_000_000_u64)),
             ("SendSIGKILL", Value::new(true)),
             ("CollectMode", Value::new("inactive-or-failed")),
