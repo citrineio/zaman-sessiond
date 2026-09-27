@@ -1,5 +1,29 @@
 # Changelog
 
+The repository's first push after 0.6.5 includes both 0.6.6 and 0.6.7.
+
+## [0.6.7] - 2026-09-26
+
+- Show five spacious menu rows and display the selected action's description in the right pane.
+- Add a 0–100% volume slider in the library and game menus; A mutes and restores the previous volume without a separate Mute row.
+- Read and control the PipeWire default output through `wpctl` in the logged-in user session.
+- Handle audio commands off the menu event loop, refresh audio state on each opening, and keep session actions responsive.
+- Preserve Transfer Games supervision and input suspension from 0.6.6.
+- Requires `wpctl` from WirePlumber in the menu service PATH.
+- Document the six-row text collision and the initial compile error in `mistakes.md`.
+- Defer a brief audible cue while adjusting volume; specification in `docs/session-0.6.7.md`.
+- The user reported the revised menu functional and visually correct on the Q6A.
+
+## [0.6.6] — Transfer Games menu integration (previously unpushed)
+
+- Add Transfer Games to the four-row library menu; game menu remains unchanged.
+- Supervise the standalone transfer window, preserve the underlying menu, and hand normalized input exclusively to the ready GUI.
+- Validate generation/owner, reject conflicting launch/power/menu actions, and restore the originating menu after confirmed cleanup.
+- Add `zamanctl transfer`, transfer D-Bus members, and the on-demand GUI user service.
+- Paired transfer component 0.4.0. No new Rust dependencies.
+- User-reported laptop browser and phone QR transfers passed; the transfer test suite passed. The GUI cancellation exit defect was corrected during board validation.
+- This version was not separately pushed or tagged; the 0.6.7 push carries these changes.
+
 ## [0.6.5] - 2026-09-16
 
 - Add Reboot to the library and active-game menus, the D-Bus API, and

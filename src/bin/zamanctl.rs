@@ -16,6 +16,10 @@ async fn main() -> Result<()> {
     let proxy = Proxy::new(&connection, SERVICE, PATH, INTERFACE).await?;
 
     match arguments.as_slice() {
+        [command] if command == "transfer" => {
+            let generation: u64 = proxy.call("StartTransfer", &(0_u64,)).await?;
+            println!("Transfer Games launch reserved: {generation}");
+        }
         [command] if command == "status" => {
             print_status(&read_status(&proxy).await?);
             print_foreground_status(&read_foreground_status(&proxy).await?);
@@ -60,7 +64,7 @@ async fn main() -> Result<()> {
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: zamanctl status | menu {open|close|toggle} | menu-status | version | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
+                "usage: zamanctl status | menu {open|close|toggle} | menu-status | version | transfer | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
             )
             .into())
         }

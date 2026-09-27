@@ -61,6 +61,17 @@ impl UserSystemd {
         Ok(true)
     }
 
+    pub async fn start_transfer(&self) -> Result<()> {
+        let manager = self.manager().await?;
+        let mut jobs = manager.receive_signal("JobRemoved").await?;
+        let path: OwnedObjectPath = manager.call("StartUnit", &(crate::transfer::UNIT, "replace")).await?;
+        wait_for_job(&mut jobs, &path, crate::transfer::UNIT, "start").await
+    }
+
+    pub async fn stop_transfer(&self) -> Result<()> {
+        self.stop(&GameHandle { unit: crate::transfer::UNIT.into() }).await
+    }
+
     pub async fn start_menu(&self) -> Result<()> {
         let manager = self.manager().await?;
         let mut removed_jobs = manager.receive_signal("JobRemoved").await?;
@@ -142,7 +153,7 @@ impl UserSystemd {
     pub async fn stop(&self, game: &GameHandle) -> Result<()> {
         let manager = self.manager().await?;
         let loaded: zbus::Result<OwnedObjectPath> = manager.call("GetUnit", &(game.unit(),)).await;
-        if loaded.is_err() {
+        if !unit_exists(loaded)? {
             return Ok(());
         }
 
@@ -155,10 +166,7 @@ impl UserSystemd {
             Err(stop_error) => {
                 let still_loaded: zbus::Result<OwnedObjectPath> =
                     manager.call("GetUnit", &(game.unit(),)).await;
-                if still_loaded.is_err() {
-                    return Ok(());
-                }
-                return Err(stop_error.into());
+                return resolve_stop_probe(stop_error, still_loaded);
             }
         };
 
@@ -166,6 +174,25 @@ impl UserSystemd {
         wait_for_job(&mut removed_jobs, &job_path, game.unit(), "stop").await?;
         println!("systemd confirmed {} stopped.", game.unit());
 
+        Ok(())
+    }
+}
+
+// Only systemd's explicit missing-unit reply establishes absence. A dead
+// connection, timeout, permission error, or unavailable manager establishes nothing.
+fn unit_exists(probe: zbus::Result<OwnedObjectPath>) -> Result<bool> {
+    match probe {
+        Ok(_) => Ok(true),
+        Err(zbus::Error::MethodError(name, _, _))
+            if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit" => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn resolve_stop_probe(stop_error: zbus::Error, probe: zbus::Result<OwnedObjectPath>) -> Result<()> {
+    if unit_exists(probe)? {
+        Err(stop_error.into())
+    } else {
         Ok(())
     }
 }
@@ -219,4 +246,35 @@ mod tests {
 
         assert_eq!(value.value_signature().to_string(), "a(sasb)");
     }
+    fn method_error(name: &str) -> zbus::Error {
+        let reply = zbus::Message::signal("/test", "com.example.Test", "Reply")
+            .unwrap().build(&()).unwrap();
+        zbus::Error::MethodError(name.try_into().unwrap(), None, reply)
+    }
+
+    #[test]
+    fn transfer_cleanup_requires_specific_missing_unit_evidence() {
+        use zbus::zvariant::OwnedObjectPath;
+        assert!(!super::unit_exists(Err(method_error("org.freedesktop.systemd1.NoSuchUnit"))).unwrap());
+        let path: OwnedObjectPath = "/org/freedesktop/systemd1/unit/test".try_into().unwrap();
+        assert!(super::unit_exists(Ok(path)).unwrap());
+        for error in [
+            zbus::Error::Failure("transport disconnected".into()),
+            method_error("org.freedesktop.DBus.Error.NoReply"),
+            method_error("org.freedesktop.DBus.Error.AccessDenied"),
+            method_error("org.freedesktop.DBus.Error.ServiceUnknown"),
+        ] {
+            assert!(super::unit_exists(Err(error)).is_err());
+        }
+    }
+
+    #[test]
+    fn transfer_failed_stop_and_failed_probe_do_not_confirm_cleanup() {
+        let failure = || zbus::Error::Failure("stop transport failed".into());
+        assert!(super::resolve_stop_probe(failure(), Err(zbus::Error::Failure("probe transport failed".into()))).is_err());
+        assert!(super::resolve_stop_probe(failure(), Err(method_error("org.freedesktop.systemd1.NoSuchUnit"))).is_ok());
+        let path = "/org/freedesktop/systemd1/unit/test".try_into().unwrap();
+        assert!(super::resolve_stop_probe(failure(), Ok(path)).is_err());
+    }
+
 }

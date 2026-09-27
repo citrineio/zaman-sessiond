@@ -10,6 +10,7 @@ pub enum Foreground {
     Library,
     Game,
     Menu,
+    Transfer,
 }
 
 impl Foreground {
@@ -18,6 +19,7 @@ impl Foreground {
             Self::Library => "library",
             Self::Game => "game",
             Self::Menu => "menu",
+            Self::Transfer => "transfer",
         }
     }
 }
@@ -62,6 +64,8 @@ pub struct MenuSnapshot {
 pub enum MenuEvent {
     Opened(MenuSnapshot),
     Closed(MenuSnapshot),
+    ContextChanged(u64),
+    TransferInput { generation: u64, event: String, value: f64 },
     Input {
         generation: u64,
         event: String,
@@ -71,6 +75,11 @@ pub enum MenuEvent {
 
 #[derive(Debug)]
 struct MenuState {
+    transfer_generation: u64,
+    transfer_phase: String,
+    transfer_owner: Option<String>,
+    transfer_menu: Option<u64>,
+    error: String,
     generation: u64,
     reason: String,
     foreground: Foreground,
@@ -80,6 +89,11 @@ struct MenuState {
 impl Default for MenuState {
     fn default() -> Self {
         Self {
+            transfer_generation: 0,
+            transfer_phase: "idle".into(),
+            transfer_owner: None,
+            transfer_menu: None,
+            error: String::new(),
             generation: 0,
             reason: String::new(),
             foreground: Foreground::Library,
@@ -93,17 +107,20 @@ pub struct MenuController {
     state: Arc<Mutex<MenuState>>,
     events: mpsc::UnboundedSender<MenuEvent>,
     presented: watch::Sender<u64>,
+    transfer_changed: watch::Sender<u64>,
 }
 
 impl MenuController {
     pub fn new() -> (Self, mpsc::UnboundedReceiver<MenuEvent>) {
         let (events, receiver) = mpsc::unbounded_channel();
         let (presented, _) = watch::channel(0);
+        let (transfer_changed, _) = watch::channel(0);
         (
             Self {
                 state: Arc::new(Mutex::new(MenuState::default())),
                 events,
                 presented,
+                transfer_changed,
             },
             receiver,
         )
@@ -118,7 +135,7 @@ impl MenuController {
     pub fn open(&self, reason: impl Into<String>) -> Option<u64> {
         let event = {
             let mut state = self.lock();
-            if state.foreground == Foreground::Menu {
+            if matches!(state.foreground, Foreground::Menu | Foreground::Transfer) {
                 return None;
             }
 
@@ -126,12 +143,13 @@ impl MenuController {
             let target = match previous {
                 Foreground::Library => ReturnTarget::Library,
                 Foreground::Game => ReturnTarget::Game,
-                Foreground::Menu => unreachable!(),
+                Foreground::Menu | Foreground::Transfer => unreachable!(),
             };
             state.foreground = Foreground::Menu;
             state.return_target = Some(target);
             state.generation = state.generation.wrapping_add(1).max(1);
             state.reason = reason.into();
+            state.error.clear();
             let snapshot = snapshot(&state);
             println!("foreground {previous} -> menu");
             println!("menu return_target={target}");
@@ -253,11 +271,10 @@ impl MenuController {
     }
 
     /// Derive the current menu context for the renderer.
-    /// pending and error are local to the menu binary; the daemon emits
-    /// false and empty respectively.
+    /// Keep the originating menu mapped while the transfer lease makes it pending.
     pub fn context(&self) -> MenuContextTuple {
         let state = self.lock();
-        let open = state.foreground == Foreground::Menu;
+        let open = state.foreground == Foreground::Menu || state.transfer_menu.is_some();
         let return_target = state
             .return_target
             .map(|t| t.as_str().to_string())
@@ -273,6 +290,8 @@ impl MenuController {
             actions.push("resume".to_string());
             if state.return_target == Some(ReturnTarget::Game) {
                 actions.push("exit-game".to_string());
+            } else {
+                actions.push("transfer".to_string());
             }
             actions.push("reboot".to_string());
             actions.push("shutdown".to_string());
@@ -282,10 +301,115 @@ impl MenuController {
             state.generation,
             return_target,
             game_state,
-            false,
-            String::new(),
+            state.foreground == Foreground::Transfer,
+            state.error.clone(),
             actions,
         )
+    }
+
+    pub fn transfer_busy(&self) -> bool {
+        self.lock().foreground == Foreground::Transfer
+    }
+
+    pub fn transfer_context(&self) -> (u64, String) {
+        let state = self.lock();
+        (state.transfer_generation, state.transfer_phase.clone())
+    }
+
+    pub fn transfer_changes(&self) -> watch::Receiver<u64> {
+        self.transfer_changed.subscribe()
+    }
+
+    pub fn reserve_transfer(&self, origin: u64, game_active: bool) -> Result<u64, String> {
+        let mut state = self.lock();
+        if game_active || state.foreground == Foreground::Game
+            || state.return_target == Some(ReturnTarget::Game) {
+            return Err("Transfer Games is only available from the library".into());
+        }
+        if state.foreground == Foreground::Transfer {
+            return Err("busy: Transfer Games owns the foreground".into());
+        }
+        let valid = if origin == 0 {
+            state.foreground == Foreground::Library
+        } else {
+            state.foreground == Foreground::Menu && state.generation == origin
+        };
+        if !valid { return Err("stale or unavailable library menu context".into()); }
+        state.transfer_generation = state.transfer_generation.wrapping_add(1).max(1);
+        state.transfer_menu = (origin != 0).then_some(origin);
+        state.transfer_owner = None;
+        state.transfer_phase = "starting".into();
+        state.foreground = Foreground::Transfer;
+        state.error.clear();
+        let generation = state.transfer_generation;
+        let _ = self.events.send(MenuEvent::ContextChanged(state.generation));
+        self.transfer_changed.send_modify(|revision| *revision += 1);
+        Ok(generation)
+    }
+
+    pub fn transfer_presented(&self, generation: u64, owner: &str) -> bool {
+        let mut state = self.lock();
+        if state.foreground != Foreground::Transfer || state.transfer_generation != generation
+            || state.transfer_phase != "starting" || owner.is_empty() { return false; }
+        state.transfer_owner = Some(owner.into());
+        state.transfer_phase = "active".into();
+        self.transfer_changed.send_modify(|revision| *revision += 1);
+        true
+    }
+
+    pub fn transfer_owner(&self) -> Option<String> { self.lock().transfer_owner.clone() }
+
+    pub fn stop_transfer(&self, generation: u64) -> bool {
+        let mut state = self.lock();
+        if state.foreground != Foreground::Transfer || state.transfer_generation != generation {
+            return false;
+        }
+        state.transfer_phase = "stopping".into();
+        self.transfer_changed.send_modify(|revision| *revision += 1);
+        true
+    }
+
+    pub fn transfer_menu_lost(&self) {
+        self.lock().transfer_menu = None;
+    }
+
+    pub fn transfer_cleanup_failed(&self, generation: u64, error: String) {
+        let mut state = self.lock();
+        if state.foreground == Foreground::Transfer && state.transfer_generation == generation {
+            state.error = error;
+            let _ = self.events.send(MenuEvent::ContextChanged(state.generation));
+        }
+    }
+
+    pub fn finish_transfer(&self, generation: u64, error: Option<String>) -> bool {
+        let mut state = self.lock();
+        if state.foreground != Foreground::Transfer || state.transfer_generation != generation {
+            return false;
+        }
+        let restore = state.transfer_menu == Some(state.generation);
+        state.foreground = if restore { Foreground::Menu } else { Foreground::Library };
+        if !restore { state.return_target = None; }
+        state.transfer_menu = None;
+        state.transfer_owner = None;
+        state.transfer_phase = if error.is_some() { "failed" } else { "idle" }.into();
+        state.error = error.unwrap_or_default();
+        state.reason = "transfer-ended".into();
+        let _ = self.events.send(MenuEvent::ContextChanged(state.generation));
+        self.transfer_changed.send_modify(|revision| *revision += 1);
+        true
+    }
+
+    pub fn transfer_input(&self, event: String, value: f64) -> bool {
+        let state = self.lock();
+        if state.foreground != Foreground::Transfer || state.transfer_phase != "active" {
+            return false;
+        }
+        if !matches!(event.as_str(), "ui_up" | "ui_down" | "ui_left" | "ui_right" |
+            "ui_accept" | "ui_back" | "ui_guide") { return false; }
+        let _ = self.events.send(MenuEvent::TransferInput {
+            generation: state.transfer_generation, event, value,
+        });
+        true
     }
 
     fn lock(&self) -> MutexGuard<'_, MenuState> {
@@ -297,7 +421,7 @@ impl MenuController {
 
 fn snapshot(state: &MenuState) -> MenuSnapshot {
     MenuSnapshot {
-        open: state.foreground == Foreground::Menu,
+        open: state.foreground == Foreground::Menu || state.transfer_menu.is_some(),
         generation: state.generation,
         reason: state.reason.clone(),
         foreground: state.foreground,
@@ -376,7 +500,7 @@ mod tests {
         assert!(context.0);
         assert_eq!(context.2, "library");
         assert_eq!(context.3, "idle");
-        assert_eq!(context.6, vec!["resume", "reboot", "shutdown"]);
+        assert_eq!(context.6, vec!["resume", "transfer", "reboot", "shutdown"]);
     }
 
     #[test]
@@ -397,4 +521,54 @@ mod tests {
         assert!(!context.0);
         assert!(context.6.is_empty());
     }
+    #[test]
+    fn transfer_library_only_and_stale_context_rejected() {
+        let (menu, _) = MenuController::new();
+        menu.open("test");
+        assert!(menu.context().6.contains(&"transfer".to_string()));
+        assert!(menu.reserve_transfer(99, false).is_err());
+        assert!(menu.reserve_transfer(0, false).is_err());
+        menu.close("test", false);
+        menu.game_started();
+        menu.open("test");
+        assert!(!menu.context().6.contains(&"transfer".to_string()));
+        assert!(menu.reserve_transfer(menu.context().1, true).is_err());
+    }
+
+    #[test]
+    fn transfer_suspends_input_and_returns_to_same_menu_generation() {
+        let (menu, _) = MenuController::new();
+        let origin = menu.open("test").unwrap();
+        let generation = menu.reserve_transfer(origin, false).unwrap();
+        assert_eq!(menu.snapshot().foreground, Foreground::Transfer);
+        assert!(menu.context().0);
+        assert!(menu.context().4);
+        assert!(!menu.input("ui_accept", 1.0));
+        assert!(menu.reserve_transfer(origin, false).is_err());
+        assert!(!menu.transfer_presented(generation + 1, ":1.2"));
+        assert!(menu.transfer_presented(generation, ":1.2"));
+        assert!(!menu.transfer_presented(generation, ":1.3"));
+        assert!(!menu.finish_transfer(generation + 1, None));
+        assert!(menu.finish_transfer(generation, None));
+        assert_eq!(menu.context().1, origin);
+        assert!(!menu.context().4);
+        assert!(menu.input("ui_accept", 1.0));
+    }
+
+    #[test]
+    fn transfer_direct_launch_and_menu_loss_return_to_library() {
+        let (menu, _) = MenuController::new();
+        let first = menu.reserve_transfer(0, false).unwrap();
+        assert!(!menu.context().0);
+        assert!(menu.finish_transfer(first, None));
+        let origin = menu.open("test").unwrap();
+        let second = menu.reserve_transfer(origin, false).unwrap();
+        assert!(second > first);
+        menu.transfer_menu_lost();
+        assert!(menu.finish_transfer(second, Some("launch failed".into())));
+        assert_eq!(menu.snapshot().foreground, Foreground::Library);
+        assert!(!menu.transfer_presented(first, ":1.2"));
+        assert!(!menu.finish_transfer(first, None));
+    }
+
 }

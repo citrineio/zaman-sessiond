@@ -163,7 +163,7 @@ if ! INTROSPECTION=$(busctl --user introspect "$SERVICE" "$PATH_OBJECT" "$INTERF
     cat "$DAEMON_LOG"
     exit 1
 fi
-for member in Reboot Shutdown MenuContext RequestMenuAction MenuContextChanged CloseMenu ExitGame ForegroundStatus Launch MenuClosed MenuInput MenuOpened MenuPresented MenuStatus OpenMenu Resume Status Stop ToggleMenu Version; do
+for member in StartTransfer TransferContext TransferPresented TransferInput Reboot Shutdown MenuContext RequestMenuAction MenuContextChanged CloseMenu ExitGame ForegroundStatus Launch MenuClosed MenuInput MenuOpened MenuPresented MenuStatus OpenMenu Resume Status Stop ToggleMenu Version; do
     if ! printf '%s\n' "$INTROSPECTION" | grep -F ".$member" >/dev/null; then
         echo "FAIL: D-Bus member $member is missing"
         printf '%s\n' "$INTROSPECTION"

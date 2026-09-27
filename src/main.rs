@@ -9,6 +9,7 @@ mod operations;
 mod registry;
 mod session;
 mod systemd;
+mod transfer;
 
 use crate::api::{publish_menu_events, ApiCommand, SessionApi, SharedStatus};
 use crate::daemon::{monitor_menu_client, recover_runtime, run_worker};

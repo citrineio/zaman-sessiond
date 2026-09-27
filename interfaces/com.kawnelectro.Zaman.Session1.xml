@@ -5,6 +5,20 @@
       <arg name="system_id" type="s" direction="in"/>
       <arg name="rom_path" type="s" direction="in"/>
     </method>
+    <method name="StartTransfer">
+      <arg name="menu_generation" type="t" direction="in"/>
+      <arg name="generation" type="t" direction="out"/>
+    </method>
+    <method name="TransferContext">
+      <arg name="generation" type="t" direction="out"/>
+      <arg name="phase" type="s" direction="out"/>
+    </method>
+    <method name="TransferPresented"><arg name="generation" type="s" direction="in"/></method>
+    <signal name="TransferInput">
+      <arg name="generation" type="t"/>
+      <arg name="event" type="s"/>
+      <arg name="value" type="d"/>
+    </signal>
     <method name="Stop"/>
     <method name="OpenMenu"/>
     <method name="CloseMenu"/>

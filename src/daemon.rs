@@ -10,10 +10,11 @@ use crate::operations::{OperationIdentity, OperationKind, OperationSlot, StartRe
 use crate::registry::ResolvedLaunch;
 use crate::session::{Session, SessionControl, SessionOutcome};
 use crate::systemd::UserSystemd;
-use std::collections::BTreeMap;
-use std::future::pending;
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::{pending, Future};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{interval_at, sleep, Instant, MissedTickBehavior};
 use zaman_sessiond::contract::MENU_SERVICE;
@@ -41,11 +42,33 @@ impl InputRefresh {
     }
 }
 
+#[derive(Default)]
+struct InputMode {
+    dirty: AtomicBool,
+}
+
+impl InputMode {
+    fn dirty(&self) -> bool {
+        self.dirty.load(Ordering::Relaxed)
+    }
+
+    async fn apply(&self, update: impl Future<Output = Result<()>>) -> Result<()> {
+        // Mark before awaiting so cancellation also leaves reconciliation due.
+        self.dirty.store(true, Ordering::Relaxed);
+        let result = update.await;
+        if result.is_ok() {
+            self.dirty.store(false, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
 struct SystemInput {
     input: InputPlumber,
     inventory: Inventory,
     initialized: bool,
     refresh_error: Option<String>,
+    mode: InputMode,
 }
 
 impl SystemInput {
@@ -56,13 +79,14 @@ impl SystemInput {
             inventory: Inventory::default(),
             initialized: false,
             refresh_error: None,
+            mode: InputMode::default(),
         };
         let refresh = system_input.refresh(INTERCEPT_PASS, true).await;
         Ok((system_input, refresh.monitor))
     }
 
     async fn set_mode(&self, mode: u32) -> Result<()> {
-        self.input.set_intercept_mode(&self.inventory, mode).await
+        self.mode.apply(self.input.set_intercept_mode(&self.inventory, mode)).await
     }
 
     async fn refresh(&mut self, mode: u32, force_monitor: bool) -> InputRefresh {
@@ -106,17 +130,18 @@ impl SystemInput {
     ) -> Result<InputRefresh> {
         let changed = !self.initialized || inventory != self.inventory;
 
-        if !should_rebuild_input(
+        if !should_reconcile_input(
             self.initialized,
             changed,
             force_monitor,
             inventory.has_system_input(),
+            self.mode.dirty(),
         ) {
             return Ok(InputRefresh::unchanged());
         }
 
         if inventory.has_system_input() {
-            self.input.set_intercept_mode(&inventory, mode).await?;
+            self.mode.apply(self.input.set_intercept_mode(&inventory, mode)).await?;
         }
 
         if changed {
@@ -149,8 +174,36 @@ fn should_rebuild_input(
     !initialized || inventory_changed || (force_monitor && has_system_input)
 }
 
+fn should_reconcile_input(
+    initialized: bool,
+    inventory_changed: bool,
+    force_monitor: bool,
+    has_system_input: bool,
+    mode_dirty: bool,
+) -> bool {
+    should_rebuild_input(initialized, inventory_changed, force_monitor, has_system_input)
+        || (mode_dirty && has_system_input)
+}
+
+// Reconciliation failure must never bypass the already-established game and
+// input shutdown paths. Report errors only after every cleanup was attempted.
+async fn finish_shutdown(
+    transfer: impl Future<Output = Result<()>>,
+    session: impl Future<Output = Result<()>>,
+    input: impl Future<Output = Result<()>>,
+) -> Result<()> {
+    let transfer = transfer.await;
+    if let Err(error) = &transfer {
+        eprintln!("Transfer shutdown cleanup failed: {error}");
+    }
+    let session = session.await;
+    let input = input.await;
+    transfer.and(session).and(input)
+}
+
 pub async fn recover_runtime() -> Result<()> {
     let systemd = UserSystemd::connect().await?;
+    systemd.stop_transfer().await?;
     if systemd.recover_orphaned_game().await? {
         println!("Stopped orphaned zaman-game.service during recovery; returning to library.");
     }
@@ -213,6 +266,10 @@ pub async fn run_worker(
 ) -> Result<()> {
     let (mut system_input, mut input_monitor) = SystemInput::connect().await?;
     let mut sessions: JoinSet<Result<SessionOutcome>> = JoinSet::new();
+    let mut transfers = JoinSet::new();
+    let mut transfer_stop: Option<watch::Sender<bool>> = None;
+    let mut transfer_pressed = BTreeSet::<String>::new();
+    let mut input_epoch = menu.transfer_context();
     // Discovery only reads inventory. The worker remains the sole owner of
     // interception changes and monitor replacement. JoinSet aborts the pending
     // read when the worker exits.
@@ -232,7 +289,47 @@ pub async fn run_worker(
     loop {
         tokio::select! {
             command = commands.recv() => {
+                let command = match command {
+                    Some(ApiCommand::Guarded { command, reply }) => {
+                        if menu.transfer_busy() {
+                            let _ = reply.send(Err("busy: close Transfer Games first".into()));
+                            continue;
+                        }
+                        let _ = reply.send(Ok(()));
+                        Some(*command)
+                    }
+                    command => command,
+                };
+                // Recheck in the worker: commands may have queued before the
+                // transfer reservation became visible to D-Bus callers.
+                if menu.transfer_busy() && matches!(&command,
+                    Some(ApiCommand::Launch(_)) | Some(ApiCommand::Stop) |
+                    Some(ApiCommand::ExitGame) | Some(ApiCommand::Reboot) | Some(ApiCommand::Shutdown)) {
+                    status.fail("busy: close Transfer Games first");
+                    continue;
+                }
                 match command {
+                    Some(ApiCommand::Guarded { .. }) => unreachable!("nested guarded command"),
+                    Some(ApiCommand::StartTransfer { menu_generation, reply }) => {
+                        let reserved = if slot.is_busy() || active_control.is_some()
+                            || matches!(status.snapshot().state.as_str(), "Active" | "Stopping") {
+                            Err("busy: a game or session operation is in flight".into())
+                        } else { menu.reserve_transfer(menu_generation, false) };
+                        match reserved {
+                            Err(reason) => { let _ = reply.send(Err(reason)); }
+                            Ok(generation) => {
+                                guide_buttons.clear();
+                                transfer_pressed.clear();
+                                let (stop, stopped) = watch::channel(false);
+                                transfer_stop = Some(stop);
+                                transfers.spawn(crate::transfer::run(
+                                    menu.clone(), generation, stopped,
+                                    system_input.input.clone(), system_input.inventory.clone(),
+                                ));
+                                let _ = reply.send(Ok(generation));
+                            }
+                        }
+                    }
                     Some(ApiCommand::Launch(launch)) => {
                         if active_control.is_some() {
                             status.fail("worker received a second launch while active");
@@ -276,6 +373,10 @@ pub async fn run_worker(
                         let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::Menu { action, reason, reply }) => {
+                        if menu.transfer_busy() {
+                            let _ = reply.send(Err("busy: close Transfer Games first".into()));
+                            continue;
+                        }
                         let kind = match action {
                             MenuAction::Open => OperationKind::OpenMenu,
                             MenuAction::Close => OperationKind::CloseMenu,
@@ -302,6 +403,11 @@ pub async fn run_worker(
                         let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::MenuClientExited) => {
+                        if menu.transfer_busy() {
+                            menu.transfer_menu_lost();
+                            if let Some(stop) = &transfer_stop { stop.send_replace(true); }
+                            continue;
+                        }
                         if menu.snapshot().open {
                             eprintln!("menu process exited unexpectedly");
                             eprintln!(
@@ -376,22 +482,32 @@ pub async fn run_worker(
                         let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::Quit) | None => {
-                        if let Some(kind) = slot.abort_for_quit() {
-                            println!(
-                                "Quit preempted in-flight operation {}.",
-                                kind.as_str()
-                            );
+                        if let Some(stop) = transfer_stop.take() { stop.send_replace(true); }
+                        while let Some(completion) = transfers.join_next().await {
+                            if let Ok(completion) = completion {
+                                if completion.cleaned { menu.finish_transfer(completion.generation, completion.error); }
+                            }
                         }
-                        let _ = close_menu(&menu, &system_input, false, "daemon-stop").await;
-                        if let Some(control) = &active_control {
-                            status.mark_stopping();
-                            let _ = control.send(SessionControl::Stop).await;
-                        }
-                        while let Some(result) = sessions.join_next().await {
-                            record_completion(&status, result);
-                        }
-                        let _ = system_input.set_mode(INTERCEPT_NONE).await;
-                        return Ok(());
+                        // A failed fresh connection must not bypass menu,
+                        // game, or input cleanup (including non-transfer sessions).
+                        return finish_shutdown(
+                            async { UserSystemd::connect().await?.stop_transfer().await },
+                            async {
+                                if let Some(kind) = slot.abort_for_quit() {
+                                    println!("Quit preempted in-flight operation {}.", kind.as_str());
+                                }
+                                let _ = close_menu(&menu, &system_input, false, "daemon-stop").await;
+                                if let Some(control) = &active_control {
+                                    status.mark_stopping();
+                                    let _ = control.send(SessionControl::Stop).await;
+                                }
+                                while let Some(result) = sessions.join_next().await {
+                                    record_completion(&status, result);
+                                }
+                                Ok(())
+                            },
+                            system_input.set_mode(INTERCEPT_NONE),
+                        ).await;
                     }
                 }
             }
@@ -399,6 +515,23 @@ pub async fn run_worker(
                 match input_event {
                     Some(input_event) => {
                         input_listener_loss_reported = false;
+                        let epoch = menu.transfer_context();
+                        if epoch != input_epoch {
+                            guide_buttons.clear();
+                            transfer_pressed.clear();
+                            input_epoch = epoch;
+                        }
+                        if menu.transfer_busy() {
+                            let (event, value) = match input_event {
+                                SystemInputEvent::MenuInput { event, value } => (if event == "ui_cancel" { "ui_back".into() } else { event }, value),
+                                SystemInputEvent::Guide { action, .. } => ("ui_guide".into(), if action == GuideAction::Released { 0.0 } else { 1.0 }),
+                            };
+                            if menu.transfer_context().1 == "active" {
+                                let forward = if value > 0.5 { transfer_pressed.insert(event.clone()) } else { transfer_pressed.remove(&event) };
+                                if forward { menu.transfer_input(event, value); }
+                            }
+                            continue;
+                        }
                         handle_system_input(
                             input_event,
                             &menu,
@@ -414,6 +547,7 @@ pub async fn run_worker(
                         }
                         input_monitor = None;
                         guide_buttons.clear();
+                        transfer_pressed.clear();
                     }
                 }
             }
@@ -430,7 +564,7 @@ pub async fn run_worker(
                     };
                     // Resolve mode and listener health now, not when the scan
                     // started: a menu transition may have occurred meanwhile.
-                    let mode = if menu.snapshot().open { INTERCEPT_ALL } else { INTERCEPT_PASS };
+                    let mode = if menu.snapshot().open || menu.transfer_busy() { INTERCEPT_ALL } else { INTERCEPT_PASS };
                     let refresh = system_input.finish_discovery(
                         inventory,
                         mode,
@@ -439,7 +573,41 @@ pub async fn run_worker(
                     if refresh.replace_monitor {
                         input_monitor = refresh.monitor;
                         guide_buttons.clear();
+                        transfer_pressed.clear();
                     }
+                }
+            }
+            completed = transfers.join_next(), if !transfers.is_empty() => {
+                transfer_stop = None;
+                guide_buttons.clear();
+                transfer_pressed.clear();
+                match completed {
+                    Some(Ok(completion)) if completion.cleaned => {
+                        if let Some(error) = &completion.error { eprintln!("{error}"); }
+                        if menu.finish_transfer(completion.generation, completion.error) {
+                            let mode = if menu.snapshot().open { INTERCEPT_ALL } else { INTERCEPT_PASS };
+                            if let Err(error) = system_input.set_mode(mode).await {
+                                eprintln!("Transfer input restoration failed: {error}");
+                            }
+                        }
+                    }
+                    Some(Ok(completion)) => {
+                        let error = completion.error.unwrap_or_else(|| "transfer cleanup failed".into());
+                        eprintln!("{error}");
+                        menu.transfer_cleanup_failed(completion.generation, error.clone());
+                        status.fail(error);
+                    }
+                    Some(Err(error)) => {
+                        eprintln!("Transfer supervisor failed: {error}; cleaning attempted service.");
+                        let generation = menu.transfer_context().0;
+                        let (stop, stopped) = watch::channel(true);
+                        transfer_stop = Some(stop);
+                        transfers.spawn(crate::transfer::run(
+                            menu.clone(), generation, stopped,
+                            system_input.input.clone(), system_input.inventory.clone(),
+                        ));
+                    }
+                    None => {}
                 }
             }
             completed = sessions.join_next(), if !sessions.is_empty() => {
@@ -545,6 +713,7 @@ async fn handle_menu_action(
     input: &SystemInput,
     game_active: bool,
 ) -> Result<()> {
+    if menu.transfer_busy() { return Err(message("busy: close Transfer Games first")); }
     match action {
         MenuAction::Open => open_menu(menu, input, reason, game_active).await,
         MenuAction::Close => close_menu(menu, input, game_active, reason).await,
@@ -838,4 +1007,40 @@ mod tests {
         task.abort();
         assert_eq!(super::requested_power_method(&task.await), None);
     }
+    #[tokio::test]
+    async fn transfer_manager_failure_does_not_skip_game_menu_or_input_shutdown() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        let (menu, _) = MenuController::new();
+        menu.game_started();
+        menu.open("shutdown-regression");
+        let (control, mut commands) = tokio::sync::mpsc::channel(1);
+        let input_released = std::cell::Cell::new(false);
+        let result = super::finish_shutdown(
+            async { steps.borrow_mut().push("transfer-connect"); Err(crate::error::message("Subscribe failed")) },
+            async {
+                assert!(menu.close("daemon-stop", true));
+                steps.borrow_mut().push("close-menu");
+                control.send(crate::session::SessionControl::Stop).await.unwrap();
+                steps.borrow_mut().extend(["stop-game", "join-game"]);
+                Ok(())
+            },
+            async { input_released.set(true); steps.borrow_mut().push("release-input"); Ok(()) },
+        ).await;
+        assert!(result.is_err());
+        assert!(!menu.snapshot().open);
+        assert!(matches!(commands.try_recv(), Ok(crate::session::SessionControl::Stop)));
+        assert!(input_released.get());
+        assert_eq!(*steps.borrow(), vec!["transfer-connect", "close-menu", "stop-game", "join-game", "release-input"]);
+    }
+
+    #[tokio::test]
+    async fn transfer_restoration_failure_retries_unchanged_healthy_inventory() {
+        let mode = super::InputMode::default();
+        assert!(!mode.dirty());
+        assert!(mode.apply(async { Err(crate::error::message("temporary property write failure")) }).await.is_err());
+        assert!(super::should_reconcile_input(true, false, false, true, mode.dirty()));
+        mode.apply(async { Ok(()) }).await.unwrap();
+        assert!(!super::should_reconcile_input(true, false, false, true, mode.dirty()));
+    }
+
 }

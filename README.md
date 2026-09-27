@@ -1,5 +1,8 @@
 # zaman-sessiond
 
+Current release: **0.6.7**, including the previously unpushed 0.6.6 Transfer Games work. See [release notes](docs/release-0.6.7.md),
+[development notes](docs/session-0.6.7.md), and [mistakes and fixes](mistakes.md).
+
 `zaman-sessiond` owns game sessions for Zaman OS. It is a persistent user
 service positioned between frontends, the emulator registry, InputPlumber, and
 the user's systemd manager.
@@ -223,3 +226,9 @@ later Buildroot integration mechanical.
   library service becomes authoritative.
 - Add frontend-facing progress and session-ended signals without breaking the
   versioned interface.
+
+## Transfer Games (0.6.6 source candidate)
+
+The library menu has Resume, Transfer Games, Reboot and Shut Down. Transfer runs in a separate fullscreen Python/QML window, while the same menu remains mapped below it. Sessiond owns readiness and input handoff. `zamanctl transfer` (or `zaman-transfer --gui`) launches from the library; it is refused during games or another foreground operation. The CLI acknowledges the reserved launch, not rendered readiness.
+
+Install the paired transfer 0.4.0 application and `dist/systemd/user/zaman-transfer-gui.service`. The unit is on-demand only; do not enable it. See `docs/deploy-0.6.6.md` for verification, backup, installation and rollback. No automatic Pegasus reload or background-transfer mode is included yet.

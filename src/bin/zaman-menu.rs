@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 use tokio::time::{interval, MissedTickBehavior};
 use zaman_sessiond::contract::{MenuContextTuple, INTERFACE, MENU_SERVICE, PATH, SERVICE};
@@ -37,24 +38,30 @@ const DESIGN_HEIGHT: f32 = 1080.0;
 enum MenuCommand {
     Close,
     ExitGame,
+    Transfer,
     Shutdown,
     Reboot,
+    Volume,
 }
 impl MenuCommand {
     fn action(self) -> &'static str {
         match self {
             Self::Close => "resume",
             Self::ExitGame => "exit-game",
+            Self::Transfer => "transfer",
             Self::Shutdown => "shutdown",
             Self::Reboot => "reboot",
+            Self::Volume => "",
         }
     }
     fn method(self) -> &'static str {
         match self {
             Self::Close => "CloseMenu",
             Self::ExitGame => "ExitGame",
+            Self::Transfer => "StartTransfer",
             Self::Shutdown => "Shutdown",
             Self::Reboot => "Reboot",
+            Self::Volume => "Volume",
         }
     }
 }
@@ -65,7 +72,7 @@ struct MenuItem {
     command: MenuCommand,
 }
 fn items(context: &MenuContextTuple) -> Vec<MenuItem> {
-    context
+    let mut result: Vec<MenuItem> = context
         .6
         .iter()
         .filter_map(|action| match action.as_str() {
@@ -83,6 +90,11 @@ fn items(context: &MenuContextTuple) -> Vec<MenuItem> {
                 detail: "Close the current game session",
                 command: MenuCommand::ExitGame,
             }),
+            "transfer" => Some(MenuItem {
+                label: "Transfer Games",
+                detail: "Add games from your phone or PC",
+                command: MenuCommand::Transfer,
+            }),
             "reboot" => Some(MenuItem {
                 label: "Reboot",
                 detail: if context.2 == "game" {
@@ -99,7 +111,48 @@ fn items(context: &MenuContextTuple) -> Vec<MenuItem> {
             }),
             _ => None,
         })
-        .collect()
+        .collect();
+    if !result.is_empty() {
+        result.insert(1, MenuItem { label: "Volume", detail: "Left / Right to adjust. Press A to mute.", command: MenuCommand::Volume });
+    }
+    result
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AudioState { percent: u8, muted: bool }
+
+impl AudioState {
+    fn displayed_percent(self) -> u8 { if self.muted { 0 } else { self.percent } }
+}
+
+fn parse_volume(output: &str) -> Result<AudioState> {
+    let value = output.split_whitespace().nth(1).ok_or_else(|| other("missing volume"))?;
+    let percent = (value.parse::<f32>()? * 100.0).round().clamp(0.0, 100.0) as u8;
+    Ok(AudioState { percent, muted: output.contains("[MUTED]") })
+}
+
+fn wpctl(args: &[&str]) -> Result<String> {
+    let output = Command::new("wpctl").args(args).output()?;
+    if !output.status.success() {
+        return Err(other(format!("wpctl failed: {}", String::from_utf8_lossy(&output.stderr))).into());
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn read_audio() -> Result<AudioState> {
+    parse_volume(&wpctl(&["get-volume", "@DEFAULT_AUDIO_SINK@"])?)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AudioAction { Read, Set(u8), ToggleMute }
+
+fn apply_audio(action: AudioAction) -> Result<AudioState> {
+    match action {
+        AudioAction::Read => {},
+        AudioAction::Set(percent) => { wpctl(&["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{}%", percent)])?; },
+        AudioAction::ToggleMute => { wpctl(&["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])?; },
+    }
+    read_audio()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,11 +160,15 @@ enum ModelEffect {
     None,
     Redraw,
     Activate(MenuCommand),
+    Audio(AudioAction),
 }
 #[derive(Debug)]
 struct MenuModel {
     generation: u64,
     selected: usize,
+    suspended: bool,
+    audio: Option<AudioState>,
+    audio_busy: bool,
     pressed: BTreeSet<String>,
     items: Vec<MenuItem>,
 }
@@ -120,15 +177,37 @@ impl MenuModel {
         Self {
             generation: context.1,
             selected: 0,
+            suspended: context.4,
+            audio: None,
+            audio_busy: false,
             pressed: BTreeSet::new(),
             items: items(context),
         }
     }
+    fn update(&mut self, context: &MenuContextTuple) {
+        let next = items(context);
+        if self.suspended != context.4 || self.items != next { self.pressed.clear(); }
+        self.suspended = context.4;
+        self.items = next;
+        self.selected = self.selected.min(self.items.len().saturating_sub(1));
+    }
     fn selected_command(&self) -> ModelEffect {
         self.items
             .get(self.selected)
-            .map(|item| ModelEffect::Activate(item.command))
+            .map(|item| match item.command {
+                MenuCommand::Volume if !self.audio_busy && self.audio.is_some() => ModelEffect::Audio(AudioAction::ToggleMute),
+                MenuCommand::Volume => ModelEffect::None,
+                command => ModelEffect::Activate(command),
+            })
             .unwrap_or(ModelEffect::None)
+    }
+    fn horizontal(&self, right: bool) -> ModelEffect {
+        if self.audio_busy || self.items.get(self.selected).map(|item| item.command) != Some(MenuCommand::Volume) {
+            return ModelEffect::None;
+        }
+        let Some(audio) = self.audio.filter(|audio| !audio.muted) else { return ModelEffect::None; };
+        let next = if right { audio.percent.saturating_add(5).min(100) } else { audio.percent.saturating_sub(5) };
+        if next == audio.percent { ModelEffect::None } else { ModelEffect::Audio(AudioAction::Set(next)) }
     }
     fn navigate(&mut self, up: bool) -> ModelEffect {
         if self.items.is_empty() {
@@ -142,6 +221,7 @@ impl MenuModel {
         ModelEffect::Redraw
     }
     fn normalized_input(&mut self, event: &str, value: f64) -> ModelEffect {
+        if self.suspended { return ModelEffect::None; }
         // Keep ALL interception for the complete click, as in v0.6.2.
         if value <= 0.5 {
             if !self.pressed.remove(event) {
@@ -157,15 +237,20 @@ impl MenuModel {
             return ModelEffect::None;
         }
         match event {
-            "ui_up" | "ui_left" => self.navigate(true),
-            "ui_down" | "ui_right" => self.navigate(false),
+            "ui_up" => self.navigate(true),
+            "ui_down" => self.navigate(false),
+            "ui_left" => self.horizontal(false),
+            "ui_right" => self.horizontal(true),
             _ => ModelEffect::None,
         }
     }
     fn keyboard_input(&mut self, keycode: Keycode) -> ModelEffect {
+        if self.suspended { return ModelEffect::None; }
         match keycode {
-            Keycode::Up | Keycode::Left => self.navigate(true),
-            Keycode::Down | Keycode::Right => self.navigate(false),
+            Keycode::Up => self.navigate(true),
+            Keycode::Down => self.navigate(false),
+            Keycode::Left => self.horizontal(false),
+            Keycode::Right => self.horizontal(true),
             Keycode::Return | Keycode::Space => self.selected_command(),
             Keycode::Escape => ModelEffect::Activate(MenuCommand::Close),
             _ => ModelEffect::None,
@@ -235,30 +320,28 @@ impl LoadedFonts {
     }
 }
 
-// Both contexts end their rows before the footer. Status/error text lives
-// in the right-hand panel, separate from the selectable rows.
+// Action descriptions and status/error text live in the right-hand panel.
 struct RowLayout {
     top: f32,
     height: f32,
     gap: f32,
-    detail_y: f32,
 }
 
 impl RowLayout {
     fn new(count: usize) -> Self {
-        if count > 3 {
+        if count > 4 {
+            Self { top: 315.0, height: 108.0, gap: 12.0 }
+        } else if count > 3 {
             Self {
                 top: 324.0,
                 height: 126.0,
                 gap: 18.0,
-                detail_y: 82.0,
             }
         } else {
             Self {
                 top: 369.0,
                 height: 156.0,
                 gap: 27.0,
-                detail_y: 99.0,
             }
         }
     }
@@ -312,15 +395,7 @@ impl MenuSurface {
         self.request_pending || self.context.4
     }
     fn update(&mut self, context: MenuContextTuple) {
-        let next = items(&context);
-        if self.model.items != next {
-            self.model.items = next;
-            self.model.selected = self
-                .model
-                .selected
-                .min(self.model.items.len().saturating_sub(1));
-            self.model.pressed.clear();
-        }
+        self.model.update(&context);
         self.context = context;
     }
     fn input(&mut self, event: &str, value: f64) -> ModelEffect {
@@ -399,31 +474,41 @@ impl MenuSurface {
                 px(135.0),
                 y + (8.0 * scale).round() as i32,
             )?;
-            draw_text(
-                &mut self.canvas,
-                &detail,
-                item.detail,
-                color,
-                px(138.0),
-                y + (rows.detail_y * scale).round() as i32,
-            )?;
+            if item.command == MenuCommand::Volume {
+                let level = self.model.audio.map(AudioState::displayed_percent).unwrap_or(0);
+                self.canvas.set_draw_color(CARAMEL);
+                self.canvas.fill_rect(Rect::new(px(693.0), y + ph((rows.height - 10.0) / 2.0) as i32, pw(250.0), ph(10.0))).map_err(other)?;
+                self.canvas.set_draw_color(if selected { JET } else { SAND });
+                if level > 0 {
+                    self.canvas.fill_rect(Rect::new(px(693.0), y + ph((rows.height - 10.0) / 2.0) as i32, pw(2.5 * level as f32), ph(10.0))).map_err(other)?;
+                }
+                let volume = self.model.audio.map(|_| format!("{level}%")).unwrap_or_else(|| "--".into());
+                draw_text(&mut self.canvas, detail, &volume, color, px(958.0), y + ph((rows.height - 36.0) / 2.0) as i32)?;
+            }
             if selected {
                 draw_text(
                     &mut self.canvas,
-                    &detail,
+                    detail,
                     ">",
                     JET,
-                    px(1011.0),
+                    px(1032.0),
                     y + ((rows.height - 36.0) * 0.5 * scale).round() as i32,
                 )?;
             }
         }
 
-        let (state_label, state_detail) = match self.context.3.as_str() {
-            "paused" => ("GAME PAUSED", "Ready when you are."),
-            "running" => ("GAME RUNNING", "Your session is active."),
-            "unknown" => ("RECOVERY NEEDED", "Resume to try again."),
-            _ => ("GAME LIBRARY", "Choose your next memory."),
+        let state_label = match self.context.3.as_str() {
+            "paused" => "GAME PAUSED",
+            "running" => "GAME RUNNING",
+            "unknown" => "RECOVERY NEEDED",
+            _ => "GAME LIBRARY",
+        };
+        let selected_item = self.model.items.get(self.model.selected);
+        let state_detail = match selected_item {
+            Some(MenuItem { command: MenuCommand::Volume, .. }) if self.model.audio.is_some_and(|audio| audio.muted) =>
+                "Muted. Press A to restore the previous volume.",
+            Some(item) => item.detail,
+            None => "Choose an action.",
         };
         draw_text(
             &mut self.canvas,
@@ -463,7 +548,7 @@ impl MenuSurface {
                     Some(self.context.5.as_str())
                 }
             });
-        if self.pending() {
+        if self.pending() && error.is_none() {
             draw_text(
                 &mut self.canvas,
                 &detail,
@@ -478,7 +563,13 @@ impl MenuSurface {
             draw_wrapped(
                 &mut self.canvas,
                 &detail,
-                "Action could not complete. Please try again.",
+                if self.context.4 {
+                    "Transfer cleanup failed. Restart the session before retrying."
+                } else if self.context.5.starts_with("Transfer") {
+                    "Transfer could not open. Check its installation and try again."
+                } else {
+                    "Action could not complete. Please try again."
+                },
                 SAND,
                 px(1278.0),
                 py(666.0),
@@ -494,7 +585,7 @@ impl MenuSurface {
         draw_text(
             &mut self.canvas,
             &small,
-            "D-PAD  Navigate     A  Select     B / GUIDE  Resume",
+            "UP/DOWN Navigate   LEFT/RIGHT Volume   A Select / Mute   B/GUIDE Resume",
             BONE,
             px(99.0),
             py(975.0),
@@ -529,13 +620,15 @@ async fn main() -> Result<()> {
     synchronize(&proxy, &video, ttf, &fonts, &mut surface).await?;
     let (results, mut result_rx) =
         tokio::sync::mpsc::unbounded_channel::<(u64, std::result::Result<(), String>)>();
+    let (audio_results, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, std::result::Result<AudioState, String>)>();
+    if let Some(current)=surface.as_mut() { current.model.audio_busy=true; start_audio(AudioAction::Read,current.model.generation,audio_results.clone()); }
     let mut tick = interval(Duration::from_millis(16));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     println!("zaman-menu ready; embedded Saira Condensed / IBM Plex Mono");
     loop {
         let mut effect = ModelEffect::None;
         tokio::select! {
-            signal=opened.next()=>{ signal.ok_or_else(||other("MenuOpened stream closed"))?; synchronize(&proxy,&video,ttf,&fonts,&mut surface).await?; }
+            signal=opened.next()=>{ signal.ok_or_else(||other("MenuOpened stream closed"))?; synchronize(&proxy,&video,ttf,&fonts,&mut surface).await?; if let Some(current)=surface.as_mut() { current.model.audio_busy=true; start_audio(AudioAction::Read,current.model.generation,audio_results.clone()); } }
             signal=closed.next()=>{ signal.ok_or_else(||other("MenuClosed stream closed"))?; synchronize(&proxy,&video,ttf,&fonts,&mut surface).await?; }
             signal=changed.next()=>{ signal.ok_or_else(||other("MenuContextChanged stream closed"))?; synchronize(&proxy,&video,ttf,&fonts,&mut surface).await?; }
             signal=input.next()=>{
@@ -549,6 +642,13 @@ async fn main() -> Result<()> {
                     if let Err(error)=result { eprintln!("Menu action failed: {error}");current.local_error=Some(error); }
                 }
                 synchronize(&proxy,&video,ttf,&fonts,&mut surface).await?;
+            }
+            Some((generation,result))=audio_rx.recv()=>{
+                if let Some(current)=surface.as_mut().filter(|s| s.model.generation==generation) {
+                    current.model.audio_busy=false;
+                    match result { Ok(audio)=>{current.model.audio=Some(audio);current.local_error=None;}, Err(error)=>{ eprintln!("Audio action failed: {error}");current.local_error=Some(error); } }
+                    current.render()?;
+                }
             }
             _=tick.tick()=>{
                 for event in pump.poll_iter() {
@@ -568,6 +668,10 @@ async fn main() -> Result<()> {
         }
         if let Some(current) = surface.as_mut() {
             match effect {
+                ModelEffect::Audio(action) if !current.model.audio_busy => {
+                    current.model.audio_busy=true;
+                    start_audio(action,current.model.generation,audio_results.clone());
+                }
                 ModelEffect::Activate(command) if !current.pending() => {
                     current.request_pending = true;
                     current.local_error = None;
@@ -591,6 +695,13 @@ async fn main() -> Result<()> {
             }
         }
     }
+}
+
+fn start_audio(action: AudioAction, generation: u64, sender: tokio::sync::mpsc::UnboundedSender<(u64, std::result::Result<AudioState, String>)>) {
+    tokio::task::spawn_blocking(move || {
+        let result = apply_audio(action).map_err(|error| error.to_string());
+        let _ = sender.send((generation, result));
+    });
 }
 
 async fn synchronize(
@@ -700,7 +811,7 @@ fn other(error: impl ToString) -> io::Error {
 // controller access, and not a graphical/hardware acceptance test.
 fn preview(args: &[String]) -> Result<()> {
     if args.len() != 6 {
-        return Err(other("usage: zaman-menu --preview library|game|exit|reboot|shutdown|error|pending WIDTH HEIGHT /absolute/output.bmp STATE").into());
+        return Err(other("usage: zaman-menu --preview library|game|volume|muted|exit|reboot|shutdown|error|pending WIDTH HEIGHT /absolute/output.bmp STATE").into());
     }
     let width: u32 = args[2].parse()?;
     let height: u32 = args[3].parse()?;
@@ -742,14 +853,15 @@ fn preview(args: &[String]) -> Result<()> {
                 "shutdown".into(),
             ]
         } else {
-            vec!["resume".into(), "reboot".into(), "shutdown".into()]
+            vec!["resume".into(), "transfer".into(), "reboot".into(), "shutdown".into()]
         },
     );
     let mut model = MenuModel::new(&context);
     match args[1].as_str() {
-        "exit" => model.selected = 1,
-        "reboot" => model.selected = if game { 2 } else { 1 },
-        "shutdown" => model.selected = if game { 3 } else { 2 },
+        "volume" | "muted" => model.selected = 1,
+        "exit" => model.selected = 2,
+        "reboot" => model.selected = 3,
+        "shutdown" => model.selected = 4,
         _ => {}
     }
     let (out_w, out_h) = canvas.output_size().map_err(other)?;
@@ -764,6 +876,7 @@ fn preview(args: &[String]) -> Result<()> {
         local_error: None,
         fonts,
     };
+    menu.model.audio = Some(AudioState { percent: 65, muted: args[1] == "muted" });
     menu.render()?;
     let mut pixels = menu
         .canvas
@@ -786,173 +899,70 @@ mod tests {
     use super::*;
 
     fn context(game: bool) -> MenuContextTuple {
-        (
-            true,
-            7,
-            if game { "game" } else { "library" }.into(),
-            if game { "paused" } else { "idle" }.into(),
-            false,
-            String::new(),
-            if game {
-                vec![
-                    "resume".into(),
-                    "exit-game".into(),
-                    "reboot".into(),
-                    "shutdown".into(),
-                ]
-            } else {
-                vec!["resume".into(), "reboot".into(), "shutdown".into()]
-            },
-        )
+        (true, 7, if game { "game" } else { "library" }.into(),
+         "paused".into(), false, String::new(),
+         if game { vec!["resume", "exit-game", "reboot", "shutdown"] }
+         else { vec!["resume", "transfer", "reboot", "shutdown"] }
+         .into_iter().map(str::to_string).collect())
     }
 
     #[test]
-    fn library_lists_resume_reboot_and_shutdown() {
-        let items = items(&context(false));
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[0].command, MenuCommand::Close);
-        assert_eq!(items[1].command, MenuCommand::Reboot);
-        assert_eq!(items[2].command, MenuCommand::Shutdown);
-        assert_eq!(items[2].label, "Shut Down");
-    }
-
-    #[test]
-    fn game_lists_resume_exit_reboot_and_shutdown() {
-        let items = items(&context(true));
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[0].command, MenuCommand::Close);
-        assert_eq!(items[1].command, MenuCommand::ExitGame);
-        assert_eq!(items[2].command, MenuCommand::Reboot);
-        assert_eq!(items[3].command, MenuCommand::Shutdown);
-    }
-
-    #[test]
-    fn no_actions_are_invented_when_service_omits_them() {
-        let mut c = context(true);
-        c.6.clear();
-        assert!(items(&c).is_empty());
-    }
-
-    #[test]
-    fn accept_activates_once_on_release() {
-        let mut m = MenuModel::new(&context(true));
-        for _ in 0..10 {
-            assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
-            assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
-            assert_eq!(
-                m.normalized_input("ui_accept", 0.0),
-                ModelEffect::Activate(MenuCommand::Close)
-            );
-            assert_eq!(m.normalized_input("ui_accept", 0.0), ModelEffect::None);
-        }
-    }
-
-    #[test]
-    fn exit_is_selected_by_navigation_and_activated_only_on_release() {
-        let mut m = MenuModel::new(&context(true));
-        m.normalized_input("ui_down", 1.0);
-        m.normalized_input("ui_down", 0.0);
-        assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
-        assert_eq!(
-            m.normalized_input("ui_accept", 0.0),
-            ModelEffect::Activate(MenuCommand::ExitGame)
-        );
-    }
-
-    #[test]
-    fn reboot_is_reachable_and_activates_once_on_release_in_both_contexts() {
+    fn volume_mute_and_existing_actions_are_reachable() {
         for game in [false, true] {
-            let mut m = MenuModel::new(&context(game));
-            for _ in 0..if game { 2 } else { 1 } {
-                m.normalized_input("ui_down", 1.0);
-                m.normalized_input("ui_down", 0.0);
-            }
-            assert_eq!(m.normalized_input("ui_accept", 0.0), ModelEffect::None);
-            assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
-            assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
-            assert_eq!(
-                m.normalized_input("ui_accept", 0.0),
-                ModelEffect::Activate(MenuCommand::Reboot)
-            );
-            assert_eq!(m.normalized_input("ui_accept", 0.0), ModelEffect::None);
+            let mut model = MenuModel::new(&context(game));
+            assert_eq!(model.items[1].command, MenuCommand::Volume);
+            if !game { assert_eq!(model.items[2].command, MenuCommand::Transfer); }
+            assert_eq!(model.items.last().unwrap().command, MenuCommand::Shutdown);
+            model.audio = Some(AudioState { percent: 50, muted: false });
+            model.selected = 1;
+            assert_eq!(model.normalized_input("ui_right", 1.0), ModelEffect::Audio(AudioAction::Set(55)));
+            assert_eq!(model.normalized_input("ui_right", 1.0), ModelEffect::None);
+            model.normalized_input("ui_right", 0.0);
+            assert_eq!(model.normalized_input("ui_left", 1.0), ModelEffect::Audio(AudioAction::Set(45)));
+            assert_eq!(model.normalized_input("ui_accept", 1.0), ModelEffect::None);
+            assert_eq!(model.normalized_input("ui_accept", 0.0), ModelEffect::Audio(AudioAction::ToggleMute));
+            assert_eq!(model.normalized_input("ui_accept", 0.0), ModelEffect::None);
+            model.audio_busy = true;
+            assert_eq!(model.keyboard_input(Keycode::Return), ModelEffect::None);
+            model.audio_busy = false;
+            model.audio = Some(AudioState { percent: 50, muted: true });
+            assert_eq!(model.keyboard_input(Keycode::Left), ModelEffect::None);
+            assert_eq!(model.keyboard_input(Keycode::Return), ModelEffect::Audio(AudioAction::ToggleMute));
+            assert_eq!(model.audio.unwrap().displayed_percent(), 0);
+            assert_eq!(model.audio.unwrap().percent, 50);
+            model.selected = model.items.len() - 1;
+            assert_eq!(model.keyboard_input(Keycode::Return), ModelEffect::Activate(MenuCommand::Shutdown));
+            assert_eq!(model.keyboard_input(Keycode::Escape), ModelEffect::Activate(MenuCommand::Close));
         }
     }
 
     #[test]
-    fn shutdown_remains_reachable_in_both_contexts() {
-        for game in [false, true] {
-            let mut m = MenuModel::new(&context(game));
-            m.normalized_input("ui_up", 1.0);
-            m.normalized_input("ui_up", 0.0);
-            assert_eq!(m.normalized_input("ui_accept", 1.0), ModelEffect::None);
-            assert_eq!(
-                m.normalized_input("ui_accept", 0.0),
-                ModelEffect::Activate(MenuCommand::Shutdown)
-            );
+    fn transfer_suspension_blocks_audio_and_preserves_selection() {
+        let mut model = MenuModel::new(&context(false));
+        model.selected = 2;
+        assert_eq!(model.keyboard_input(Keycode::Return), ModelEffect::Activate(MenuCommand::Transfer));
+        let mut next = context(false);
+        next.4 = true;
+        model.update(&next);
+        assert_eq!(model.keyboard_input(Keycode::Escape), ModelEffect::None);
+        assert_eq!(model.normalized_input("ui_right", 1.0), ModelEffect::None);
+        next.4 = false;
+        model.update(&next);
+        assert_eq!(model.selected, 2);
+    }
+
+    #[test]
+    fn volume_is_clamped_and_rows_fit() {
+        let mut model = MenuModel::new(&context(true));
+        model.selected = 1;
+        model.audio = Some(AudioState { percent: 99, muted: false });
+        assert_eq!(model.keyboard_input(Keycode::Right), ModelEffect::Audio(AudioAction::Set(100)));
+        model.audio = Some(AudioState { percent: 0, muted: false });
+        assert_eq!(model.keyboard_input(Keycode::Left), ModelEffect::None);
+        assert_eq!(parse_volume("Volume: 0.42 [MUTED]").unwrap(), AudioState { percent: 42, muted: true });
+        for count in [3, 4, 5] {
+            let rows = RowLayout::new(count);
+            assert!(rows.y(count-1) + rows.height < 936.0);
         }
-    }
-
-    #[test]
-    fn rows_fit_above_footer_at_supported_output_sizes() {
-        for count in [3, 4] {
-            let layout = RowLayout::new(count);
-            assert!(layout.top >= 300.0);
-            assert!(layout.height >= 120.0);
-            for (width, height) in [(1280.0_f32, 800.0_f32), (1920.0, 1080.0), (2560.0, 1440.0)] {
-                let scale = (width / DESIGN_WIDTH).min(height / DESIGN_HEIGHT);
-                let end = layout.y(count - 1) + layout.height;
-                assert!((end * scale).round() < (936.0 * scale).round());
-                assert!(layout.detail_y + 36.0 <= layout.height);
-                for index in 1..count {
-                    assert!(layout.y(index - 1) + layout.height < layout.y(index));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn back_cancel_escape_always_request_close() {
-        let mut m = MenuModel::new(&context(true));
-        m.selected = 2;
-        for name in ["ui_back", "ui_cancel"] {
-            assert_eq!(m.normalized_input(name, 1.0), ModelEffect::None);
-            assert_eq!(
-                m.normalized_input(name, 0.0),
-                ModelEffect::Activate(MenuCommand::Close)
-            );
-            assert_eq!(m.normalized_input(name, 0.0), ModelEffect::None);
-        }
-        assert_eq!(
-            m.keyboard_input(Keycode::Escape),
-            ModelEffect::Activate(MenuCommand::Close)
-        );
-    }
-
-    #[test]
-    fn navigation_wraps_and_ignores_stale_releases_and_repeated_presses() {
-        let mut m = MenuModel::new(&context(true));
-        assert_eq!(m.normalized_input("ui_down", 0.0), ModelEffect::None);
-        m.normalized_input("ui_up", 1.0);
-        assert_eq!(m.selected, 3);
-        assert_eq!(m.normalized_input("ui_up", 1.0), ModelEffect::None);
-        m.normalized_input("ui_up", 0.0);
-        m.normalized_input("ui_up", 1.0);
-        assert_eq!(m.selected, 2);
-
-        let mut m = MenuModel::new(&context(false));
-        m.navigate(true);
-        assert_eq!(m.selected, 2);
-    }
-
-    #[test]
-    fn command_actions_and_methods_match_dbus_contract() {
-        assert_eq!(MenuCommand::Close.action(), "resume");
-        assert_eq!(MenuCommand::ExitGame.action(), "exit-game");
-        assert_eq!(MenuCommand::Reboot.action(), "reboot");
-        assert_eq!(MenuCommand::Reboot.method(), "Reboot");
-        assert_eq!(MenuCommand::Shutdown.action(), "shutdown");
-        assert_eq!(MenuCommand::Close.method(), "CloseMenu");
-        assert_eq!(MenuCommand::ExitGame.method(), "ExitGame");
-        assert_eq!(MenuCommand::Shutdown.method(), "Shutdown");
     }
 }

@@ -67,3 +67,7 @@ zamanctl version   # must print the new number
 - Full accepted record: `docs/session-0.6.5.md`.
 - Deployment/rollback reference: `docs/deploy-0.6.5.md`.
 - Next feature: Zaman-transfer UI integration; placement/design still open.
+
+## Current work — 0.6.6, 2026-09-17 (OPEN)
+
+Single feature: Transfer Games standalone GUI from the library menu, paired with transfer 0.4.0. Baseline 0.6.5 remains the last installed/accepted version. Source implementation/reviews/checkpoints prepared; user formatting/build/tests/install/hardware evidence still pending. No commit or push. Keep the user-side execution split and post-install closeout gate. See `session-0.6.6.md` and `deploy-0.6.6.md`. Next release: background transfer with automatic Pegasus reload.

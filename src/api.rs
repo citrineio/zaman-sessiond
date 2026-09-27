@@ -16,6 +16,8 @@ pub enum MenuAction {
 
 #[derive(Debug)]
 pub enum ApiCommand {
+    Guarded { command: Box<ApiCommand>, reply: oneshot::Sender<std::result::Result<(), String>> },
+    StartTransfer { menu_generation: u64, reply: oneshot::Sender<std::result::Result<u64, String>> },
     Launch(ResolvedLaunch),
     Stop,
     Menu {
@@ -139,6 +141,12 @@ pub async fn publish_menu_events(
 
     while let Some(event) = events.recv().await {
         match event {
+            MenuEvent::ContextChanged(generation) => {
+                signal_emitter.emit(INTERFACE, "MenuContextChanged", &(generation,)).await?;
+            }
+            MenuEvent::TransferInput { generation, event, value } => {
+                signal_emitter.emit(INTERFACE, "TransferInput", &(generation, event, value)).await?;
+            }
             MenuEvent::Opened(snapshot) => {
                 signal_emitter
                     .emit(
@@ -193,11 +201,21 @@ impl SessionApi {
         }
     }
 
+    fn require_transfer_idle(&self) -> fdo::Result<()> {
+        if self.menu.transfer_busy() {
+            Err(fdo::Error::Failed("busy: close Transfer Games first".into()))
+        } else { Ok(()) }
+    }
+
     async fn send_command(&self, command: ApiCommand) -> fdo::Result<()> {
+        self.require_transfer_idle()?;
+        let (reply, response) = oneshot::channel();
         self.commands
-            .send(command)
+            .send(ApiCommand::Guarded { command: Box::new(command), reply })
             .await
-            .map_err(|_| fdo::Error::Failed("zaman-sessiond worker is unavailable".to_string()))
+            .map_err(|_| fdo::Error::Failed("zaman-sessiond worker is unavailable".to_string()))?;
+        response.await.map_err(|_| fdo::Error::Failed("zaman-sessiond worker stopped".into()))?
+            .map_err(fdo::Error::Failed)
     }
 
     async fn request_menu(&self, action: MenuAction, reason: &'static str) -> fdo::Result<()> {
@@ -227,7 +245,39 @@ impl SessionApi {
 
 #[interface(name = "com.kawnelectro.Zaman.Session1")]
 impl SessionApi {
+    #[zbus(out_args("generation"))]
+    async fn start_transfer(&self, menu_generation: u64) -> fdo::Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.send_command(ApiCommand::StartTransfer { menu_generation, reply }).await?;
+        response.await.map_err(|_| fdo::Error::Failed("transfer worker stopped".into()))?
+            .map_err(fdo::Error::Failed)
+    }
+
+    #[zbus(out_args("generation", "phase"))]
+    fn transfer_context(&self) -> (u64, String) { self.menu.transfer_context() }
+
+    async fn transfer_presented(
+        &self, generation: &str,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+    ) -> fdo::Result<()> {
+        let generation = parse_transfer_generation(generation)?;
+        let sender = header.sender().ok_or_else(|| fdo::Error::AccessDenied("missing sender".into()))?;
+        let bus = zbus::Proxy::new(connection, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus")
+            .await.map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        let owner: String = bus.call("GetNameOwner", &(zaman_sessiond::contract::TRANSFER_SERVICE,))
+            .await.map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        if sender.as_str() != owner || !self.menu.transfer_presented(generation, &owner) {
+            return Err(fdo::Error::AccessDenied("stale generation or unregistered transfer owner".into()));
+        }
+        Ok(())
+    }
+
+    #[zbus(signal)]
+    async fn transfer_input(signal_emitter: &SignalEmitter<'_>, generation: u64, event: &str, value: f64) -> zbus::Result<()>;
+
     async fn launch(&self, system_id: &str, rom_path: &str) -> fdo::Result<()> {
+        self.require_transfer_idle()?;
         if self.menu.snapshot().open {
             return Err(fdo::Error::Failed(
                 "close the Zaman menu before launching a game".to_string(),
@@ -239,21 +289,15 @@ impl SessionApi {
             .map_err(|error| fdo::Error::Failed(error.to_string()))?;
         self.status.reserve(&launch).map_err(fdo::Error::Failed)?;
 
-        if self
-            .commands
-            .send(ApiCommand::Launch(launch))
-            .await
-            .is_err()
-        {
-            self.status.fail("zaman-sessiond worker is unavailable");
-            return Err(fdo::Error::Failed(
-                "zaman-sessiond worker is unavailable".to_string(),
-            ));
+        if let Err(error) = self.send_command(ApiCommand::Launch(launch)).await {
+            self.status.fail(error.to_string());
+            return Err(error);
         }
         Ok(())
     }
 
     async fn stop(&self) -> fdo::Result<()> {
+        self.require_transfer_idle()?;
         self.status.mark_stopping();
         self.send_command(ApiCommand::Stop).await
     }
@@ -275,12 +319,14 @@ impl SessionApi {
     }
 
     async fn exit_game(&self) -> fdo::Result<()> {
+        self.require_transfer_idle()?;
         self.require_open_menu()?;
         self.status.mark_stopping();
         self.send_command(ApiCommand::ExitGame).await
     }
 
     async fn reboot(&self) -> fdo::Result<()> {
+        self.require_transfer_idle()?;
         self.status.mark_stopping();
         if let Err(error) = self.send_command(ApiCommand::Reboot).await {
             self.status.fail(format!("reboot request failed: {error}"));
@@ -290,6 +336,7 @@ impl SessionApi {
     }
 
     async fn shutdown(&self) -> fdo::Result<()> {
+        self.require_transfer_idle()?;
         // No require_open_menu(): shutdown must also work from the
         // frontend when no game is running (idle power-off).
         self.status.mark_stopping();
@@ -318,6 +365,7 @@ impl SessionApi {
         let context = self.menu.context();
         validate_menu_action(&context, generation, &action)?;
         match action.as_str() {
+            "transfer" => self.start_transfer(generation).await.map(|_| ()),
             "resume" => self.resume().await,
             "exit-game" => self.exit_game().await,
             "reboot" => self.reboot().await,
@@ -410,11 +458,21 @@ impl SessionApi {
     ) -> zbus::Result<()>;
 }
 
+// Qt's generic D-Bus call binds Python ints as signed values. A decimal
+// string on this one inbound method preserves every u64 generation exactly.
+fn parse_transfer_generation(value: &str) -> fdo::Result<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(fdo::Error::InvalidArgs("generation must be an unsigned decimal integer".into()));
+    }
+    value.parse::<u64>().map_err(|_| fdo::Error::InvalidArgs("generation is outside the u64 range".into()))
+}
+
 fn validate_menu_action(
     context: &MenuContextTuple,
     generation: u64,
     action: &str,
 ) -> fdo::Result<()> {
+    if context.4 { return Err(fdo::Error::Failed("busy: close Transfer Games first".into())); }
     if context.1 != generation {
         return Err(fdo::Error::Failed(format!(
             "stale menu generation {} (current {})",
@@ -482,4 +540,12 @@ mod tests {
             assert!(super::validate_menu_action(&menu.context(), context.1, "reboot").is_err());
         }
     }
+    #[test]
+    fn transfer_qt_decimal_generation_preserves_full_u64_and_rejects_invalid_input() {
+        assert_eq!(super::parse_transfer_generation("18446744073709551615").unwrap(), u64::MAX);
+        for invalid in ["", "-1", "+1", "1.0", "18446744073709551616"] {
+            assert!(super::parse_transfer_generation(invalid).is_err());
+        }
+    }
+
 }
