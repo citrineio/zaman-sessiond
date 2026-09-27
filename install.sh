@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install built 0.6.7 binaries on the Zaman kiosk user's machine.
+# Install built 0.6.8 binaries on the Zaman kiosk user's machine.
 set -Eeuo pipefail
 umask 077
 
@@ -28,7 +28,7 @@ if pgrep -f '^(/usr/bin/)?python3 .*zaman_transfer\.py([[:space:]]|$)' >/dev/nul
     die 'Stop the command-line Zaman transfer session first.'
 fi
 previous_version=$(/usr/local/bin/zamanctl version)
-[[ $previous_version == 0.6.6 || $previous_version == 0.6.7 ]] || die "Expected installed version 0.6.6 or 0.6.7, found $previous_version."
+[[ $previous_version == 0.6.7 || $previous_version == 0.6.8 ]] || die "Expected installed version 0.6.7 or 0.6.8, found $previous_version."
 for unit in "${units[@]}"; do
     systemctl --user is-active --quiet "$unit" || die "$unit is not active; inspect it before installing."
 done
@@ -37,7 +37,7 @@ done
 sudo -v
 backup_root=${XDG_STATE_HOME:-"$HOME/.local/state"}/zaman-sessiond/backups
 mkdir -p -- "$backup_root"
-backup=$(mktemp -d "$backup_root/$previous_version-before-0.6.7.XXXXXXXX")
+backup=$(mktemp -d "$backup_root/$previous_version-before-0.6.8.XXXXXXXX")
 for i in "${!names[@]}"; do
     sudo cp -a -- "${targets[i]}" "$backup/${names[i]}"
 done
@@ -70,6 +70,6 @@ done
 systemctl --user start zaman-sessiond.service zaman-menu.service
 for unit in "${units[@]}"; do systemctl --user is-active --quiet "$unit"; done
 installed_version=$(/usr/local/bin/zamanctl version)
-[[ $installed_version == 0.6.7 ]] || die "Version check failed: $installed_version"
+[[ $installed_version == 0.6.8 ]] || die "Version check failed: $installed_version"
 trap - EXIT INT TERM
 printf 'Installed Zaman Sessiond %s. Backup: %s\n' "$installed_version" "$backup"

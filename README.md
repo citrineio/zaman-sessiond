@@ -1,7 +1,7 @@
 # zaman-sessiond
 
-Current release: **0.6.7**, including the previously unpushed 0.6.6 Transfer Games work. See [release notes](docs/release-0.6.7.md),
-[development notes](docs/session-0.6.7.md), and [mistakes and fixes](mistakes.md).
+Current source candidate: **0.6.8**. See [0.6.8 deployment and acceptance](docs/deploy-0.6.8.md),
+[0.6.7 release notes](docs/release-0.6.7.md), and [mistakes and fixes](mistakes.md).
 
 `zaman-sessiond` owns game sessions for Zaman OS. It is a persistent user
 service positioned between frontends, the emulator registry, InputPlumber, and

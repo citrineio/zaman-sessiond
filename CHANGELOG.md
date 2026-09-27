@@ -2,6 +2,14 @@
 
 The repository's first push after 0.6.5 includes both 0.6.6 and 0.6.7.
 
+## [0.6.8] - 2026-09-27 (candidate)
+
+- Move Volume into a System submenu in library and game contexts; preserve its 0.6.7 control behavior.
+- Show Ethernet, Wi-Fi and IPv4 status; scan and select visible networks, toggle or disconnect Wi-Fi, and join WPA Personal networks with controller password entry.
+- Cycle password keyboard modes with X or the onscreen Mode key.
+- Keep network work off the menu input loop and retain the existing D-Bus session contract.
+- Require NetworkManager's `nmcli` for network controls; see `docs/deploy-0.6.8.md` for device acceptance.
+
 ## [0.6.7] - 2026-09-26
 
 - Show five spacious menu rows and display the selected action's description in the right pane.
