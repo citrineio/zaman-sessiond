@@ -7,6 +7,11 @@ The repository's first push after 0.6.5 includes both 0.6.6 and 0.6.7.
 - Move Volume into a System submenu in library and game contexts; preserve its 0.6.7 control behavior.
 - Show Ethernet, Wi-Fi and IPv4 status; scan and select visible networks, toggle or disconnect Wi-Fi, and join WPA Personal networks with controller password entry.
 - Cycle password keyboard modes with X or the onscreen Mode key.
+- Show masked entry feedback and Connect readiness while typing the Wi-Fi password.
+- Show the password field above the onscreen keys so typing feedback is visible beside the keyboard.
+- Add temporary Show/Hide for password verification and reconnect saved Wi-Fi profiles without re-entry.
+- Keep network scans responsive and refresh connection status automatically every three seconds while the network menu is open.
+- Restore device autoconnect when turning Wi-Fi on after an explicit disconnect.
 - Keep network work off the menu input loop and retain the existing D-Bus session contract.
 - Require NetworkManager's `nmcli` for network controls; see `docs/deploy-0.6.8.md` for device acceptance.
 

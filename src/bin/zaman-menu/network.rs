@@ -1,5 +1,5 @@
 //! NetworkManager-backed menu operations. All calls run in a blocking worker.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -21,6 +21,7 @@ pub struct NetworkState {
     pub ethernet_connection: Option<String>,
     pub address: Option<String>,
     pub access_points: Vec<AccessPoint>,
+    pub saved_profiles: HashMap<String, String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -28,8 +29,16 @@ pub enum NetworkAction {
     Read {
         scan: bool,
     },
-    Wifi(bool),
+    Wifi {
+        enabled: bool,
+        device: Option<String>,
+    },
     Disconnect(String),
+    Saved {
+        ssid: String,
+        uuid: String,
+        device: String,
+    },
     Connect {
         ssid: String,
         device: String,
@@ -117,7 +126,7 @@ fn read(scan: bool) -> io::Result<NetworkState> {
             .find(|line| !line.is_empty())
             .map(str::to_owned);
     }
-    if wifi_enabled {
+    if scan && wifi_enabled {
         if let Some(device) = &state.wifi_device {
             let raw = nmcli(&[
                 "-t",
@@ -129,7 +138,7 @@ fn read(scan: bool) -> io::Result<NetworkState> {
                 "ifname",
                 device,
                 "--rescan",
-                if scan { "yes" } else { "no" },
+                "yes",
             ])?;
             let mut seen = HashSet::new();
             for line in raw.lines() {
@@ -147,9 +156,31 @@ fn read(scan: bool) -> io::Result<NetworkState> {
             state
                 .access_points
                 .sort_by(|a, b| b.active.cmp(&a.active).then(b.signal.cmp(&a.signal)));
+            state.saved_profiles = saved_wifi_profiles()?;
         }
     }
     Ok(state)
+}
+
+// Match the actual Wi-Fi SSID, rather than the user-editable profile name.
+// UUIDs uniquely identify a saved profile without reading its secrets.
+fn saved_wifi_profiles() -> io::Result<HashMap<String, String>> {
+    let profiles = nmcli(&["-t", "-f", "UUID,TYPE", "connection", "show"])?;
+    let mut saved = HashMap::new();
+    for line in profiles.lines() {
+        let columns = fields(line);
+        if columns.len() != 2 || !matches!(columns[1].as_str(), "wifi" | "802-11-wireless") {
+            continue;
+        }
+        if let Ok(ssid) = nmcli(&[
+            "-g", "802-11-wireless.ssid", "connection", "show", "uuid", &columns[0],
+        ]) {
+            if let Some(ssid) = ssid.lines().next().filter(|ssid| !ssid.is_empty()) {
+                saved.entry(fields(ssid).join(":")).or_insert(columns[0].clone());
+            }
+        }
+    }
+    Ok(saved)
 }
 
 // --ask keeps the passphrase out of argv and process listings. Input is sent
@@ -209,11 +240,21 @@ fn connect_with_password_using(
 pub fn apply(action: NetworkAction) -> io::Result<NetworkState> {
     match action {
         NetworkAction::Read { scan } => return read(scan),
-        NetworkAction::Wifi(enabled) => {
+        NetworkAction::Wifi { enabled, device } => {
             nmcli(&["radio", "wifi", if enabled { "on" } else { "off" }])?;
+            if enabled {
+                if let Some(device) = device {
+                    // "device disconnect" suppresses autoactivation on the device.
+                    // Restore it when Wi-Fi is explicitly turned back on.
+                    nmcli(&["device", "set", &device, "autoconnect", "yes"])?;
+                }
+            }
         }
         NetworkAction::Disconnect(device) => {
             nmcli(&["device", "disconnect", &device])?;
+        }
+        NetworkAction::Saved { uuid, device, .. } => {
+            nmcli(&["--wait", "30", "connection", "up", "uuid", &uuid, "ifname", &device])?;
         }
         NetworkAction::Connect {
             ssid,

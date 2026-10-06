@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::time::{interval, interval_at, Instant, MissedTickBehavior};
 use zaman_sessiond::contract::{MenuContextTuple, INTERFACE, MENU_SERVICE, PATH, SERVICE};
 use zbus::{connection::Builder, Connection, Proxy};
 #[path = "zaman-menu/network.rs"]
@@ -217,6 +217,16 @@ enum ModelEffect {
     Audio(AudioAction),
     Network(NetworkAction),
 }
+#[derive(Debug)]
+enum NetworkRequest {
+    Status,
+    Scan,
+    Change,
+    Saved(String),
+}
+const SAVED_PROFILE_FAILED: &str =
+    "Saved connection failed. Select it again to enter a password.";
+const NETWORK_STATUS_FAILED: &str = "Network status unavailable. Check NetworkManager.";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MenuPage {
     Root,
@@ -243,11 +253,17 @@ struct MenuModel {
     page: MenuPage,
     network: Option<NetworkState>,
     network_busy: bool,
+    scan_busy: bool,
+    status_busy: bool,
+    network_revision: u64,
+    rescan_needed: bool,
+    retry_password: Option<String>,
     ap_page: usize,
     pending_ssid: Option<String>,
     password: String,
     password_col: usize,
     password_layer: usize,
+    password_visible: bool,
 }
 impl MenuModel {
     fn new(context: &MenuContextTuple) -> Self {
@@ -263,11 +279,17 @@ impl MenuModel {
             page: MenuPage::Root,
             network: None,
             network_busy: false,
+            scan_busy: false,
+            status_busy: false,
+            network_revision: 0,
+            rescan_needed: false,
+            retry_password: None,
             ap_page: 0,
             pending_ssid: None,
             password: String::new(),
             password_col: 0,
             password_layer: 0,
+            password_visible: false,
         }
     }
     fn update(&mut self, context: &MenuContextTuple) {
@@ -291,6 +313,7 @@ impl MenuModel {
         if page == MenuPage::Password {
             self.password_col = 0;
             self.password_layer = 0;
+            self.password_visible = false;
         }
         self.pressed.clear();
         self.rebuild();
@@ -305,7 +328,7 @@ impl MenuModel {
     }
     fn password_width(&self) -> usize {
         if self.selected == 4 {
-            4
+            5
         } else {
             self.password_keys(self.selected).len()
         }
@@ -334,7 +357,11 @@ impl MenuModel {
                 ModelEffect::Redraw
             }
             2 => self.cycle_password_mode(),
-            3 if !self.network_busy && (8..=63).contains(&self.password.len()) => {
+            3 => {
+                self.password_visible = !self.password_visible;
+                ModelEffect::Redraw
+            }
+            4 if !self.network_busy && (8..=63).contains(&self.password.len()) => {
                 let Some(ssid) = self.pending_ssid.clone() else {
                     return ModelEffect::None;
                 };
@@ -416,14 +443,23 @@ impl MenuModel {
                                     .collect::<String>()
                             ),
                             format!(
-                                "{} / {}% signal{}",
+                                "{} / {}% signal{}{}",
                                 if ap.security.is_empty() || ap.security == "--" {
                                     "Open"
                                 } else {
                                     &ap.security
                                 },
                                 ap.signal,
-                                if ap.active { " / Connected" } else { "" }
+                                if ap.active { " / Connected" } else { "" },
+                                if !ap.active
+                                    && self.network.as_ref().is_some_and(|n| {
+                                        n.saved_profiles.contains_key(&ap.ssid)
+                                    })
+                                {
+                                    " / Saved"
+                                } else {
+                                    ""
+                                }
                             ),
                             MenuCommand::AccessPoint(i),
                         )
@@ -438,9 +474,17 @@ impl MenuModel {
                 }
                 if rows.is_empty() {
                     rows.push(item(
-                        "No networks",
-                        "Select Back, then Refresh to scan again.",
-                        MenuCommand::Refresh,
+                        if self.scan_busy {
+                            "Scanning..."
+                        } else {
+                            "No networks"
+                        },
+                        if self.scan_busy {
+                            "Searching for Wi-Fi networks."
+                        } else {
+                            "Select Back, then Available Networks to scan again."
+                        },
+                        MenuCommand::Networks,
                     ));
                 }
                 rows.push(item("Back", "Return to Network.", MenuCommand::Back));
@@ -457,6 +501,71 @@ impl MenuModel {
                 .collect(),
         };
         self.selected = self.selected.min(self.items.len().saturating_sub(1));
+    }
+    fn update_network(&mut self, mut state: NetworkState, scanned: bool) -> bool {
+        if !scanned && state.wifi_enabled && state.wifi_device.is_some() {
+            if let Some(previous) = &self.network {
+                state.access_points = previous.access_points.clone();
+                state.saved_profiles = previous.saved_profiles.clone();
+            }
+        }
+        if self.network.as_ref() == Some(&state) {
+            return false;
+        }
+        let selected_command = if scanned && self.page == MenuPage::AccessPoints {
+            self.items.get(self.selected).map(|item| item.command)
+        } else {
+            None
+        };
+        let selected_ssid = if scanned && self.page == MenuPage::AccessPoints {
+            self.items
+                .get(self.selected)
+                .and_then(|item| match item.command {
+                    MenuCommand::AccessPoint(i) => self
+                        .network
+                        .as_ref()?
+                        .access_points
+                        .get(i)
+                        .map(|ap| ap.ssid.clone()),
+                    _ => None,
+                })
+        } else {
+            None
+        };
+        self.network = Some(state);
+        let pages = self.network.as_ref().unwrap().access_points.len().div_ceil(3);
+        self.ap_page = self.ap_page.min(pages.saturating_sub(1));
+        let mut selected_network_disappeared = false;
+        if let Some(ssid) = &selected_ssid {
+            if let Some(position) = self
+                .network
+                .as_ref()
+                .unwrap()
+                .access_points
+                .iter()
+                .position(|ap| ap.ssid == ssid.as_str())
+            {
+                self.ap_page = position / 3;
+                self.selected = position % 3;
+            } else {
+                selected_network_disappeared = true;
+            }
+        }
+        self.rebuild();
+        if selected_network_disappeared {
+            if let Some(position) = self.items.iter().position(|item| item.command == MenuCommand::Back) {
+                self.selected = position;
+            }
+        } else if selected_ssid.is_none() {
+            if let Some(command) = selected_command {
+                if matches!(command, MenuCommand::Back | MenuCommand::Page) {
+                    if let Some(position) = self.items.iter().position(|item| item.command == command) {
+                        self.selected = position;
+                    }
+                }
+            }
+        }
+        true
     }
     fn selected_command(&mut self) -> ModelEffect {
         if self.page == MenuPage::Password {
@@ -478,16 +587,17 @@ impl MenuModel {
                 self.set_page(MenuPage::Network);
                 ModelEffect::Network(NetworkAction::Read { scan: false })
             }
-            MenuCommand::Wifi if !self.network_busy => ModelEffect::Network(NetworkAction::Wifi(
-                !self.network.as_ref().is_some_and(|n| n.wifi_enabled),
-            )),
+            MenuCommand::Wifi if !self.network_busy => ModelEffect::Network(NetworkAction::Wifi {
+                enabled: !self.network.as_ref().is_some_and(|n| n.wifi_enabled),
+                device: self.network.as_ref().and_then(|n| n.wifi_device.clone()),
+            }),
             MenuCommand::Networks if !self.network_busy => {
                 self.ap_page = 0;
                 self.set_page(MenuPage::AccessPoints);
                 ModelEffect::Network(NetworkAction::Read { scan: true })
             }
             MenuCommand::Refresh if !self.network_busy => {
-                ModelEffect::Network(NetworkAction::Read { scan: true })
+                ModelEffect::Network(NetworkAction::Read { scan: false })
             }
             MenuCommand::Disconnect if !self.network_busy => self
                 .network
@@ -507,6 +617,26 @@ impl MenuModel {
                     if ap.security.contains("802.1X") || ap.security.contains("WEP") {
                         return ModelEffect::None;
                     }
+                    if self.retry_password.as_deref() != Some(ap.ssid.as_str()) {
+                        if let Some(uuid) = self
+                            .network
+                            .as_ref()
+                            .and_then(|n| n.saved_profiles.get(&ap.ssid))
+                        {
+                            if let Some(device) = self
+                                .network
+                                .as_ref()
+                                .and_then(|n| n.wifi_device.as_ref())
+                            {
+                                return ModelEffect::Network(NetworkAction::Saved {
+                                    ssid: ap.ssid.clone(),
+                                    uuid: uuid.clone(),
+                                    device: device.clone(),
+                                });
+                            }
+                        }
+                    }
+                    self.retry_password = None;
                     self.pending_ssid = Some(ap.ssid.clone());
                     self.password.clear();
                     self.set_page(MenuPage::Password);
@@ -550,6 +680,7 @@ impl MenuModel {
             }
             MenuPage::Password => {
                 self.password.clear();
+                self.password_visible = false;
                 self.pending_ssid = None;
                 self.set_page(MenuPage::AccessPoints);
                 ModelEffect::Redraw
@@ -812,7 +943,7 @@ impl MenuSurface {
         self.context = context;
     }
     fn input(&mut self, event: &str, value: f64) -> ModelEffect {
-        if self.pending() || self.model.network_busy {
+        if self.pending() {
             if value <= 0.5 {
                 self.model.pressed.remove(event);
             }
@@ -863,7 +994,68 @@ impl MenuSurface {
             .fill_rect(Rect::new(px(99.0), py(285.0), pw(975.0), ph(2.0)))
             .map_err(other)?;
 
-        let rows = RowLayout::new(self.model.items.len());
+        // Keep the password field immediately above the keyboard so each
+        // controller press has visible feedback in the same area of the UI.
+        let rows = if self.model.page == MenuPage::Password {
+            RowLayout {
+                top: 425.0,
+                height: 90.0,
+                gap: 12.0,
+            }
+        } else {
+            RowLayout::new(self.model.items.len())
+        };
+        if self.model.page == MenuPage::Password {
+            draw_text(
+                &mut self.canvas,
+                small,
+                "WI-FI PASSWORD",
+                SAND,
+                px(100.0),
+                py(300.0),
+            )?;
+            draw_text(
+                &mut self.canvas,
+                small,
+                &format!("{}/63", self.model.password.len()),
+                SAND,
+                px(992.0),
+                py(300.0),
+            )?;
+            self.canvas.set_draw_color(CARAMEL);
+            self.canvas
+                .draw_rect(Rect::new(px(96.0), py(338.0), pw(978.0), ph(79.0)))
+                .map_err(other)?;
+            let mut entry = if self.model.password_visible {
+                self.model.password.clone()
+            } else {
+                "*".repeat(self.model.password.len())
+            };
+            if entry.is_empty() {
+                entry = "Enter password".into();
+            } else {
+                entry.push('|');
+                let mut clipped = false;
+                while label.size_of(&entry).map_err(other)?.0 > pw(900.0) {
+                    entry.remove(0);
+                    clipped = true;
+                }
+                if clipped {
+                    while label.size_of(&format!("...{entry}")).map_err(other)?.0 > pw(900.0) {
+                        entry.remove(0);
+                    }
+                    entry.insert_str(0, "...");
+                }
+            }
+            draw_text(
+                &mut self.canvas,
+                label,
+                &entry,
+                if self.model.password.is_empty() { SAND } else { BONE },
+                px(132.0),
+                py(341.0),
+            )?;
+        }
         for (index, item) in self.model.items.iter().enumerate() {
             let y = py(rows.y(index));
             let selected = index == self.model.selected;
@@ -880,7 +1072,17 @@ impl MenuSurface {
             }
             let color = if selected { JET } else { BONE };
             if self.model.page == MenuPage::Password {
-                let controls = ["Space", "Erase", "Mode", "Connect"];
+                let controls = [
+                    "Space",
+                    "Erase",
+                    "Mode",
+                    if self.model.password_visible {
+                        "Hide"
+                    } else {
+                        "Show"
+                    },
+                    "Connect",
+                ];
                 let keys: Vec<String> = if index < 4 {
                     self.model
                         .password_keys(index)
@@ -894,7 +1096,7 @@ impl MenuSurface {
                     let (start, stride, cell_width) = if index < 4 {
                         (133.0, 90.0, 78.0)
                     } else {
-                        (133.0, 225.0, 206.0)
+                        (133.0, 180.0, 160.0)
                     };
                     let x = px(start + column as f32 * stride);
                     let width = pw(cell_width);
@@ -1015,11 +1217,12 @@ impl MenuSurface {
                 .filter(|c| !c.is_control())
                 .take(24)
                 .collect();
-            format!(
-                "{}\nPassword: {} (min 8)\nD-pad picks; A enters.\nX / Mode: abc / ABC / symbols.",
-                ssid,
-                self.model.password.len()
-            )
+            let status = if self.model.password.len() < 8 {
+                "Enter at least 8 characters."
+            } else {
+                "Ready to connect."
+            };
+            format!("{ssid}\nPassword appears above the keys.\n{status}\nX / Mode: abc / ABC / symbols.")
         } else {
             state_detail
         };
@@ -1104,13 +1307,19 @@ impl MenuSurface {
                 px(1278.0),
                 py(666.0),
             )?;
+        } else if self.model.scan_busy && error.is_none() && self.model.page == MenuPage::AccessPoints {
+            draw_text(&mut self.canvas, &detail, "Scanning...", SAND, px(1278.0), py(666.0))?;
         } else if error.is_some() {
             // Detailed service diagnostics remain in status/journal; keep the
             // on-screen recovery instruction short and readable at TV distance.
             draw_wrapped(
                 &mut self.canvas,
                 &detail,
-                if self.model.page != MenuPage::Root && self.local_error.is_some() {
+                if self.local_error.as_deref() == Some(SAVED_PROFILE_FAILED) {
+                    SAVED_PROFILE_FAILED
+                } else if self.local_error.as_deref() == Some(NETWORK_STATUS_FAILED) {
+                    NETWORK_STATUS_FAILED
+                } else if self.model.page != MenuPage::Root && self.local_error.is_some() {
                     "Network action failed. Check the connection and try again."
                 } else if self.context.4 {
                     "Transfer cleanup failed. Restart the session before retrying."
@@ -1178,7 +1387,7 @@ async fn main() -> Result<()> {
     let (audio_results, mut audio_rx) =
         tokio::sync::mpsc::unbounded_channel::<(u64, std::result::Result<AudioState, String>)>();
     let (network_results, mut network_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(u64, std::result::Result<NetworkState, String>)>();
+        tokio::sync::mpsc::unbounded_channel::<(u64, u64, NetworkRequest, std::result::Result<NetworkState, String>)>();
     if let Some(current) = surface.as_mut() {
         current.model.audio_busy = true;
         start_audio(
@@ -1189,6 +1398,8 @@ async fn main() -> Result<()> {
     }
     let mut tick = interval(Duration::from_millis(16));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut status_tick = interval_at(Instant::now() + Duration::from_secs(3), Duration::from_secs(3));
+    status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     println!("zaman-menu ready; embedded Saira Condensed / IBM Plex Mono");
     loop {
         let mut effect = ModelEffect::None;
@@ -1215,22 +1426,90 @@ async fn main() -> Result<()> {
                     current.render()?;
                 }
             }
-            Some((generation,result))=network_rx.recv()=>{
+            Some((generation,revision,request,result))=network_rx.recv()=>{
                 if let Some(current)=surface.as_mut().filter(|s| s.model.generation==generation) {
-                    current.model.network_busy=false;
-                    match result {
-                        Ok(state)=>{
-                            current.model.network=Some(state);
-                            current.model.ap_page=0;
-                            current.local_error=None;
-                            if current.model.page==MenuPage::Password {
-                                current.model.pending_ssid=None;
-                                current.model.set_page(MenuPage::AccessPoints);
-                            } else { current.model.rebuild(); }
+                    let valid = revision == current.model.network_revision;
+                    let mut redraw = false;
+                    let saved_ssid = if let NetworkRequest::Saved(ssid) = &request { Some(ssid.clone()) } else { None };
+                    match request {
+                        NetworkRequest::Status => {
+                            current.model.status_busy = false;
+                            if valid {
+                                match result {
+                                    Ok(state) => {
+                                        redraw = current.model.update_network(state, false);
+                                        if current.local_error.as_deref() == Some(NETWORK_STATUS_FAILED) {
+                                            current.local_error = None;
+                                            redraw = true;
+                                        }
+                                    }
+                                    Err(_) if current.local_error.is_none() => {
+                                        current.local_error = Some(NETWORK_STATUS_FAILED.into());
+                                        redraw = true;
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
                         }
-                        Err(error)=>{ eprintln!("Network action failed: {error}"); current.local_error=Some(error); }
+                        NetworkRequest::Scan => {
+                            current.model.scan_busy = false;
+                            if valid {
+                                match result {
+                                    Ok(state) => {
+                                        redraw = current.model.update_network(state, true);
+                                        current.local_error = None;
+                                    }
+                                    Err(error) => { eprintln!("Network scan failed: {error}"); current.local_error = Some(error); }
+                                }
+                                redraw = true;
+                            }
+                            current.model.rebuild();
+                        }
+                        NetworkRequest::Change | NetworkRequest::Saved(_) => {
+                            current.model.network_busy = false;
+                            if valid {
+                                match result {
+                                    Ok(state) => {
+                                        current.model.update_network(state, false);
+                                        current.model.retry_password = None;
+                                        current.local_error = None;
+                                        if current.model.page == MenuPage::Password {
+                                            current.model.pending_ssid = None;
+                                            current.model.password_visible = false;
+                                            current.model.set_page(MenuPage::AccessPoints);
+                                        }
+                                        if current.model.page == MenuPage::AccessPoints { current.model.rescan_needed = true; }
+                                    }
+                                    Err(error) => {
+                                        eprintln!("Network action failed: {error}");
+                                        if let Some(ssid) = saved_ssid {
+                                            current.model.retry_password = Some(ssid);
+                                            current.local_error = Some(SAVED_PROFILE_FAILED.into());
+                                        } else {
+                                            current.local_error = Some(error);
+                                        }
+                                    }
+                                }
+                                redraw = true;
+                            }
+                        }
                     }
-                    current.render()?;
+                    if current.model.rescan_needed && !current.model.scan_busy && !current.model.network_busy {
+                        current.model.rescan_needed = false;
+                        if current.model.page == MenuPage::AccessPoints {
+                            current.model.scan_busy = true;
+                            current.model.network_revision += 1;
+                            start_network(NetworkAction::Read { scan: true }, generation, current.model.network_revision, NetworkRequest::Scan, network_results.clone());
+                            redraw = true;
+                        }
+                    }
+                    if redraw { current.render()?; }
+                }
+            }
+            _=status_tick.tick()=>{
+                if let Some(current)=surface.as_mut().filter(|s| matches!(s.model.page, MenuPage::Network | MenuPage::AccessPoints) && !s.model.status_busy && !s.model.network_busy && !s.model.scan_busy) {
+                    current.model.status_busy=true;
+                    start_network(NetworkAction::Read { scan: false }, current.model.generation, current.model.network_revision, NetworkRequest::Status, network_results.clone());
                 }
             }
             _=tick.tick()=>{
@@ -1238,7 +1517,7 @@ async fn main() -> Result<()> {
                     match event {
                         Event::Quit{..}=>return Ok(()),
                         Event::KeyDown{keycode:Some(key),repeat:false,..}=>{
-                            if let Some(current)=surface.as_mut().filter(|s| !s.pending() && !s.model.network_busy) {
+                            if let Some(current)=surface.as_mut().filter(|s| !s.pending()) {
                                 effect=current.model.keyboard_input(key);
                                 if effect!=ModelEffect::None { break; }
                             }
@@ -1255,11 +1534,42 @@ async fn main() -> Result<()> {
                     current.model.audio_busy = true;
                     start_audio(action, current.model.generation, audio_results.clone());
                 }
-                ModelEffect::Network(action) if !current.model.network_busy => {
-                    current.model.network_busy = true;
-                    current.local_error = None;
-                    start_network(action, current.model.generation, network_results.clone());
-                    current.render()?;
+                ModelEffect::Network(action) => {
+                    match action {
+                        NetworkAction::Read { scan: true } if current.model.scan_busy => {
+                            current.model.rescan_needed = true;
+                        }
+                        NetworkAction::Read { scan: true } => {
+                            current.model.scan_busy = true;
+                            current.model.network_revision += 1;
+                            current.local_error = None;
+                            current.model.rebuild();
+                            start_network(NetworkAction::Read { scan: true }, current.model.generation, current.model.network_revision, NetworkRequest::Scan, network_results.clone());
+                            current.render()?;
+                        }
+                        NetworkAction::Read { scan: false } if !current.model.status_busy && !current.model.network_busy && !current.model.scan_busy => {
+                            current.model.status_busy = true;
+                            start_network(NetworkAction::Read { scan: false }, current.model.generation, current.model.network_revision, NetworkRequest::Status, network_results.clone());
+                        }
+                        NetworkAction::Read { scan: false } => {}
+                        NetworkAction::Saved { ssid, uuid, device } if !current.model.network_busy => {
+                            current.model.network_busy = true;
+                            current.model.network_revision += 1;
+                            if current.model.scan_busy && current.model.page == MenuPage::AccessPoints { current.model.rescan_needed = true; }
+                            current.local_error = None;
+                            start_network(NetworkAction::Saved { ssid: ssid.clone(), uuid, device }, current.model.generation, current.model.network_revision, NetworkRequest::Saved(ssid), network_results.clone());
+                            current.render()?;
+                        }
+                        action if !current.model.network_busy => {
+                            current.model.network_busy = true;
+                            current.model.network_revision += 1;
+                            if current.model.scan_busy && current.model.page == MenuPage::AccessPoints { current.model.rescan_needed = true; }
+                            current.local_error = None;
+                            start_network(action, current.model.generation, current.model.network_revision, NetworkRequest::Change, network_results.clone());
+                            current.render()?;
+                        }
+                        _ => {}
+                    }
                 }
                 ModelEffect::Activate(command) if !current.pending() => {
                     current.request_pending = true;
@@ -1278,6 +1588,9 @@ async fn main() -> Result<()> {
                     });
                 }
                 ModelEffect::Redraw => {
+                    if current.model.page == MenuPage::Password && current.local_error.as_deref() == Some(SAVED_PROFILE_FAILED) {
+                        current.local_error = None;
+                    }
                     current.render()?;
                 }
                 _ => {}
@@ -1300,11 +1613,13 @@ fn start_audio(
 fn start_network(
     action: NetworkAction,
     generation: u64,
-    sender: tokio::sync::mpsc::UnboundedSender<(u64, std::result::Result<NetworkState, String>)>,
+    revision: u64,
+    request: NetworkRequest,
+    sender: tokio::sync::mpsc::UnboundedSender<(u64, u64, NetworkRequest, std::result::Result<NetworkState, String>)>,
 ) {
     tokio::task::spawn_blocking(move || {
         let result = network::apply(action).map_err(|error| error.to_string());
-        let _ = sender.send((generation, result));
+        let _ = sender.send((generation, revision, request, result));
     });
 }
 
@@ -1415,7 +1730,7 @@ fn other(error: impl ToString) -> io::Error {
 // controller access, and not a graphical/hardware acceptance test.
 fn preview(args: &[String]) -> Result<()> {
     if args.len() != 6 {
-        return Err(other("usage: zaman-menu --preview library|game|system|network|networks|password|volume|muted|exit|reboot|shutdown|error|pending WIDTH HEIGHT /absolute/output.bmp STATE").into());
+        return Err(other("usage: zaman-menu --preview library|game|system|network|networks|password|password-typed|password-shown|volume|muted|exit|reboot|shutdown|error|pending WIDTH HEIGHT /absolute/output.bmp STATE").into());
     }
     let width: u32 = args[2].parse()?;
     let height: u32 = args[3].parse()?;
@@ -1471,9 +1786,13 @@ fn preview(args: &[String]) -> Result<()> {
         "volume" | "muted" => model.set_page(MenuPage::System),
         "network" => model.set_page(MenuPage::Network),
         "networks" => model.set_page(MenuPage::AccessPoints),
-        "password" => {
+        "password" | "password-typed" | "password-shown" => {
             model.pending_ssid = Some("Home Network".into());
             model.set_page(MenuPage::Password);
+            if args[1] == "password-typed" || args[1] == "password-shown" {
+                model.password = "example8".into();
+            }
+            model.password_visible = args[1] == "password-shown";
         }
         "exit" => model.selected = 2,
         "reboot" => model.selected = 3,
@@ -1504,6 +1823,7 @@ fn preview(args: &[String]) -> Result<()> {
                     active: false,
                 },
             ],
+            saved_profiles: Default::default(),
         });
         model.rebuild();
     }
@@ -1711,10 +2031,15 @@ mod tests {
         assert_eq!(model.selected_command(), ModelEffect::Redraw);
         assert_eq!(model.password, "q");
         model.selected = 4;
-        model.password_col = 3;
+        model.password_col = 4;
         assert_eq!(model.selected_command(), ModelEffect::None); // WPA passphrases need 8 characters
         model.password_col = 2;
         assert_eq!(model.selected_command(), ModelEffect::Redraw);
+        model.password_col = 3;
+        assert_eq!(model.selected_command(), ModelEffect::Redraw);
+        assert!(model.password_visible);
+        assert_eq!(model.selected_command(), ModelEffect::Redraw);
+        assert!(!model.password_visible);
         model.selected = 0;
         model.password_col = 0;
         assert_eq!(model.selected_command(), ModelEffect::Redraw);
@@ -1730,7 +2055,7 @@ mod tests {
             model.selected_command();
         }
         model.selected = 4;
-        model.password_col = 3;
+        model.password_col = 4;
         assert!(matches!(
             model.selected_command(),
             ModelEffect::Network(NetworkAction::Connect {
@@ -1765,5 +2090,84 @@ mod tests {
         }
         assert_eq!(model.keyboard_input(Keycode::X), ModelEffect::Redraw);
         assert_eq!(model.password_layer, 1);
+    }
+
+    #[test]
+    fn saved_wifi_reuses_profile_and_failed_profile_offers_password() {
+        let mut model = MenuModel::new(&context(false));
+        model.network = Some(NetworkState {
+            wifi_device: Some("wlan0".into()),
+            access_points: vec![network::AccessPoint {
+                ssid: "Home".into(),
+                signal: 80,
+                security: "WPA2".into(),
+                active: false,
+            }],
+            saved_profiles: [("Home".into(), "saved-uuid".into())].into(),
+            ..NetworkState::default()
+        });
+        model.set_page(MenuPage::AccessPoints);
+        assert_eq!(model.selected_command(), ModelEffect::Network(NetworkAction::Saved {
+            ssid: "Home".into(), uuid: "saved-uuid".into(), device: "wlan0".into(),
+        }));
+        model.retry_password = Some("Home".into());
+        assert_eq!(model.selected_command(), ModelEffect::Redraw);
+        assert_eq!(model.page, MenuPage::Password);
+        assert!(!model.password_visible);
+    }
+
+    #[test]
+    fn status_preserves_scan_and_scan_does_not_block_back() {
+        let mut model = MenuModel::new(&context(false));
+        model.network = Some(NetworkState {
+            access_points: vec![network::AccessPoint {
+                ssid: "Home".into(), signal: 80, security: "WPA2".into(), active: false,
+            }],
+            ..NetworkState::default()
+        });
+        model.set_page(MenuPage::AccessPoints);
+        model.scan_busy = true;
+        assert!(model.update_network(NetworkState { wifi_enabled: true, wifi_device: Some("wlan0".into()), ..NetworkState::default() }, false));
+        assert_eq!(model.network.as_ref().unwrap().access_points[0].ssid, "Home");
+        assert_eq!(model.normalized_input("ui_back", 1.0), ModelEffect::None);
+        assert_eq!(model.normalized_input("ui_back", 0.0), ModelEffect::Redraw);
+        assert_eq!(model.page, MenuPage::Network);
+    }
+
+    #[test]
+    fn scan_reordering_preserves_the_selected_network() {
+        let mut model = MenuModel::new(&context(false));
+        let home = network::AccessPoint {
+            ssid: "Home".into(),
+            signal: 80,
+            security: "WPA2".into(),
+            active: false,
+        };
+        let guest = network::AccessPoint {
+            ssid: "Guest".into(),
+            signal: 60,
+            security: "--".into(),
+            active: false,
+        };
+        model.network = Some(NetworkState {
+            access_points: vec![home.clone(), guest.clone()],
+            ..NetworkState::default()
+        });
+        model.set_page(MenuPage::AccessPoints);
+        model.selected = 1;
+        assert!(model.update_network(NetworkState {
+            access_points: vec![guest, home],
+            ..NetworkState::default()
+        }, true));
+        assert_eq!(model.selected, 0);
+        assert_eq!(model.items[model.selected].label, "Guest");
+        model.selected = model.items.len() - 1;
+        assert!(model.update_network(NetworkState {
+            access_points: vec![network::AccessPoint {
+                ssid: "Third".into(), signal: 40, security: "--".into(), active: false,
+            }],
+            ..NetworkState::default()
+        }, true));
+        assert_eq!(model.items[model.selected].command, MenuCommand::Back);
     }
 }
