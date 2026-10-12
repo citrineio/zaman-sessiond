@@ -1,8 +1,8 @@
 use crate::api::{ApiCommand, MenuAction, SharedStatus};
 use crate::error::{message, Result};
-use crate::guide::{GuideAction, GuideButton, GuideEffect};
+use crate::guide::{GuideAction, GuideRouter, RoutedGuide};
 use crate::inputplumber::{
-    InputPlumber, Inventory, SystemInputEvent, SystemInputMonitor, INTERCEPT_ALL, INTERCEPT_NONE,
+    InputPlumber, Inventory, InventoryRefreshQueue, SystemInputEvent, SystemInputMonitor, INTERCEPT_ALL, INTERCEPT_NONE,
     INTERCEPT_PASS,
 };
 use crate::menu::MenuController;
@@ -10,18 +10,16 @@ use crate::operations::{OperationIdentity, OperationKind, OperationSlot, StartRe
 use crate::registry::ResolvedLaunch;
 use crate::session::{Session, SessionControl, SessionOutcome};
 use crate::systemd::UserSystemd;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::future::{pending, Future};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{interval_at, sleep, Instant, MissedTickBehavior};
-use zaman_sessiond::contract::MENU_SERVICE;
-use zbus::{Connection, Proxy};
 
-const MENU_PRESENT_TIMEOUT: Duration = Duration::from_secs(3);
-const INPUT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const INPUT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const INPUT_RECOVERY_INTERVAL: Duration = Duration::from_secs(1);
 const LAUNCH_BUDGET: Duration = Duration::from_secs(40);
 const MENU_BUDGET: Duration = Duration::from_secs(3);
 const STOP_BUDGET: Duration = Duration::from_secs(40);
@@ -207,34 +205,10 @@ pub async fn recover_runtime() -> Result<()> {
     if systemd.recover_orphaned_game().await? {
         println!("Stopped orphaned zaman-game.service during recovery; returning to library.");
     }
-    Ok(())
-}
-
-pub async fn monitor_menu_client(
-    connection: Connection,
-    commands: mpsc::Sender<ApiCommand>,
-) -> Result<()> {
-    let proxy = Proxy::new(
-        &connection,
-        "org.freedesktop.DBus",
-        "/org/freedesktop/DBus",
-        "org.freedesktop.DBus",
-    )
-    .await?;
-    let mut changes = proxy
-        .receive_signal_with_args("NameOwnerChanged", &[(0, MENU_SERVICE)])
-        .await?;
-
-    use futures_util::StreamExt;
-    while let Some(change) = changes.next().await {
-        let (name, old_owner, new_owner): (String, String, String) = change.body().deserialize()?;
-        if name == MENU_SERVICE && !old_owner.is_empty() && new_owner.is_empty() {
-            if commands.send(ApiCommand::MenuClientExited).await.is_err() {
-                return Ok(());
-            }
-        }
+    if let Err(error) = crate::sway::SwayController::from_environment().game_ended().await {
+        eprintln!("Sway startup library restoration: {error}");
     }
-    Err(message("D-Bus NameOwnerChanged stream closed"))
+    Ok(())
 }
 
 fn current_identity(menu: &MenuController) -> OperationIdentity {
@@ -265,6 +239,13 @@ pub async fn run_worker(
     menu: MenuController,
 ) -> Result<()> {
     let (mut system_input, mut input_monitor) = SystemInput::connect().await?;
+    let mut inventory_monitor = system_input.input.monitor_inventory();
+    let mut inventory_refresh = InventoryRefreshQueue::default();
+    let mut input_recovery = interval_at(
+        Instant::now() + INPUT_RECOVERY_INTERVAL,
+        INPUT_RECOVERY_INTERVAL,
+    );
+    input_recovery.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut sessions: JoinSet<Result<SessionOutcome>> = JoinSet::new();
     let mut transfers = JoinSet::new();
     let mut transfer_stop: Option<watch::Sender<bool>> = None;
@@ -275,7 +256,7 @@ pub async fn run_worker(
     // read when the worker exits.
     let mut discoveries: JoinSet<Result<Inventory>> = JoinSet::new();
     let mut active_control: Option<mpsc::Sender<SessionControl>> = None;
-    let mut guide_buttons = BTreeMap::<String, GuideButton>::new();
+    let mut guide_buttons = GuideRouter::default();
     let mut input_listener_loss_reported = false;
     let mut input_refresh = interval_at(
         Instant::now() + INPUT_REFRESH_INTERVAL,
@@ -285,6 +266,10 @@ pub async fn run_worker(
     let mut slot = OperationSlot::new();
     let mut slot_tick = interval_at(Instant::now() + SLOT_TICK, SLOT_TICK);
     slot_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut compositor_tick = interval_at(Instant::now() + Duration::from_millis(250),
+        Duration::from_millis(250));
+    compositor_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut compositor_error: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -351,7 +336,7 @@ pub async fn run_worker(
                         menu.game_started();
                         let (control, controls) = mpsc::channel(8);
                         active_control = Some(control);
-                        sessions.spawn(run_session(launch, controls));
+                        sessions.spawn(run_session(launch, controls, menu.compositor.clone()));
                         let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::Stop) => {
@@ -364,7 +349,6 @@ pub async fn run_worker(
                                 continue;
                             }
                         };
-                        let _ = close_menu(&menu, &system_input, false, "session-stop").await;
 
                         if let Some(control) = &active_control {
                             status.mark_stopping();
@@ -414,10 +398,10 @@ pub async fn run_worker(
                                 "restoring {}",
                                 if active_control.is_some() { "game" } else { "library" }
                             );
-                            if let Err(error) = system_input.set_mode(INTERCEPT_PASS).await {
-                                eprintln!("Failed to restore controller input after menu exit: {error}");
+                            if let Err(error) = close_menu(&menu, &system_input,
+                                active_control.is_some(), "menu-process-exited").await {
+                                eprintln!("Failed to restore foreground after menu exit: {error}");
                             }
-                            menu.close("menu-process-exited", active_control.is_some());
                         }
                     }
                     Some(ApiCommand::ExitGame) => {
@@ -430,7 +414,6 @@ pub async fn run_worker(
                                 continue;
                             }
                         };
-                        let _ = close_menu(&menu, &system_input, false, "exit-game").await;
                         if let Some(control) = &active_control {
                             status.mark_stopping();
                             let _ = control.send(SessionControl::ExitGame).await;
@@ -504,7 +487,7 @@ pub async fn run_worker(
                                 while let Some(result) = sessions.join_next().await {
                                     record_completion(&status, result);
                                 }
-                                Ok(())
+                                menu.compositor.game_ended().await
                             },
                             system_input.set_mode(INTERCEPT_NONE),
                         ).await;
@@ -548,7 +531,32 @@ pub async fn run_worker(
                         input_monitor = None;
                         guide_buttons.clear();
                         transfer_pressed.clear();
+                        inventory_refresh.request(Instant::now());
                     }
+                }
+            }
+            change = inventory_monitor.next() => {
+                if change.is_some() {
+                    guide_buttons.clear();
+                    inventory_refresh.request(Instant::now());
+                } else {
+                    inventory_monitor = system_input.input.monitor_inventory();
+                    inventory_refresh.request(Instant::now());
+                }
+            }
+            _ = wait_inventory_refresh(inventory_refresh.deadline()), if discoveries.is_empty() => {
+                inventory_refresh.started();
+                request_input_discovery(&mut discoveries, &system_input.input);
+            }
+            _ = input_recovery.tick() => {
+                if should_retry_input(
+                    system_input.initialized,
+                    system_input.refresh_error.is_some(),
+                    system_input.mode.dirty(),
+                    system_input.inventory.has_system_input(),
+                    input_monitor.is_some(),
+                ) {
+                    request_input_discovery(&mut discoveries, &system_input.input);
                 }
             }
             _ = input_refresh.tick() => {
@@ -615,13 +623,33 @@ pub async fn run_worker(
                     let power_method = requested_power_method(&result);
                     record_completion(&status, result);
                     active_control = None;
-                    if menu.game_ended("game-ended") {
+                    let menu_was_open = menu.game_ended("game-ended");
+                    if let Err(error) = menu.compositor.game_ended().await {
+                        eprintln!("Sway library restoration after game exit: {error}");
+                    }
+                    if menu_was_open {
                         if let Err(error) = system_input.set_mode(INTERCEPT_PASS).await {
                             eprintln!("Failed to restore library input after game exit: {error}");
                         }
                     }
                     if let Some(method) = power_method {
                         request_system_power(&status, method).await;
+                    }
+                }
+            }
+            _ = compositor_tick.tick() => {
+                // Transfer retains foreground ownership until its existing
+                // supervisor confirms cleanup; never steal focus from it.
+                if !menu.transfer_busy() {
+                    match menu.compositor.reconcile(menu.snapshot().open, active_control.is_some()).await {
+                        Ok(()) => { if compositor_error.take().is_some() { println!("Sway supervision recovered."); } }
+                        Err(error) => {
+                            let error = error.to_string();
+                            if compositor_error.as_deref() != Some(error.as_str()) {
+                                eprintln!("Sway supervision: {error}; retrying.");
+                                compositor_error = Some(error);
+                            }
+                        }
                     }
                 }
             }
@@ -644,9 +672,27 @@ async fn next_system_input(monitor: &mut Option<SystemInputMonitor>) -> Option<S
     }
 }
 
+async fn wait_inventory_refresh(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => pending::<()>().await,
+    }
+}
+
+fn should_retry_input(
+    initialized: bool,
+    refresh_failed: bool,
+    mode_dirty: bool,
+    has_system_input: bool,
+    listener_present: bool,
+) -> bool {
+    !initialized || refresh_failed || (has_system_input && (mode_dirty || !listener_present))
+}
+
 fn request_input_discovery(discoveries: &mut JoinSet<Result<Inventory>>, input: &InputPlumber) {
     // Includes completed-but-unconsumed results, so they cannot be overtaken
-    // by a newer discovery. Missed requests are coalesced, not queued.
+    // by a newer discovery. InventoryRefreshQueue separately retains hotplug
+    // invalidations that arrive during a scan; periodic requests can be dropped.
     if !discoveries.is_empty() {
         return;
     }
@@ -658,42 +704,66 @@ async fn handle_system_input(
     event: SystemInputEvent,
     menu: &MenuController,
     input: &SystemInput,
-    game_active: bool,
-    guide_buttons: &mut BTreeMap<String, GuideButton>,
+    _game_active: bool,
+    guide_buttons: &mut GuideRouter,
 ) -> Result<()> {
     match event {
         SystemInputEvent::Guide { target, action } => {
-            let menu_open = menu.snapshot().open;
-            let effect = guide_buttons
-                .entry(target.clone())
-                .or_default()
-                .input(action, menu_open);
-            match effect {
-                GuideEffect::OpenMenu => {
-                    println!("Guide press requested OpenMenu from {target}.");
-                    if let Err(error) =
-                        handle_menu_action(MenuAction::Open, "guide", menu, input, game_active)
-                            .await
-                    {
-                        eprintln!("Guide menu request failed: {error}");
+            match action {
+                GuideAction::Pressed if guide_buttons.needs_status(&target) => {
+                    match crate::quickshell_menu::status().await {
+                        Ok(status) => {
+                            let identity = if status.status == "open" {
+                                match tokio::time::timeout(Duration::from_millis(750), input.input.guide_identity(&target)).await {
+                                    Ok(Ok(Some(identity))) => identity,
+                                    _ => {
+                                        guide_buttons.suppress_press(&target);
+                                        crate::quickshell_menu::log("Guide close not armed: source identity unavailable");
+                                        return Ok(());
+                                    }
+                                }
+                            } else { String::new() };
+                            let effect = guide_buttons.press(&target, &status.status, &status.session_key, &identity);
+                            if effect == RoutedGuide::Open {
+                                // PASS automatically became ALL on this Guide press.
+                                // Release only that source's automatic interception;
+                                // the resident helper must acquire and restore PASS.
+                                match tokio::time::timeout(Duration::from_millis(750), input.input.release_guide_activation(&target)).await {
+                                    Ok(Ok(())) => {},
+                                    result => {
+                                        crate::quickshell_menu::log(&format!("Guide activation handoff failed: {result:?}"));
+                                        return Ok(());
+                                    }
+                                }
+                                if let Err(error) = crate::quickshell_menu::dispatch(MenuAction::Open).await {
+                                    eprintln!("Guide Quickshell open failed: {error}");
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            guide_buttons.suppress_press(&target);
+                            crate::quickshell_menu::log(&format!("Guide status failed: {error}"));
+                            eprintln!("Guide Quickshell status failed: {error}");
+                        },
                     }
                 }
-                GuideEffect::CloseOnReleaseArmed => {
-                    println!("Guide press armed CloseMenu from {target}; waiting for release.");
-                }
-                GuideEffect::CloseMenu => {
-                    println!("Guide release requested CloseMenu from {target}.");
-                    if let Err(error) =
-                        handle_menu_action(MenuAction::Close, "guide", menu, input, game_active)
-                            .await
-                    {
-                        eprintln!("Guide menu request failed: {error}");
+                GuideAction::Pressed => guide_buttons.suppress_press(&target),
+                GuideAction::Released => {
+                    if let Some(armed_session) = guide_buttons.release(&target) {
+                        let same_source = matches!(
+                            tokio::time::timeout(Duration::from_millis(750), input.input.guide_identity(&target)).await,
+                            Ok(Ok(Some(identity))) if identity == armed_session.identity
+                        );
+                        if !same_source {
+                            crate::quickshell_menu::log("Guide release ignored: controller disappeared or changed");
+                            return Ok(());
+                        }
+                        if let Err(error) = crate::quickshell_menu::close_session(armed_session.session).await {
+                            crate::quickshell_menu::log(&format!("Guide close failed: {error}"));
+                            eprintln!("Guide Quickshell close failed: {error}");
+                        }
                     }
                 }
-                GuideEffect::None if action == GuideAction::Released => {
-                    println!("Guide released by {target}.");
-                }
-                GuideEffect::None => {}
             }
         }
         SystemInputEvent::MenuInput { event, value } => {
@@ -708,62 +778,15 @@ async fn handle_system_input(
 
 async fn handle_menu_action(
     action: MenuAction,
-    reason: &'static str,
+    _reason: &'static str,
     menu: &MenuController,
-    input: &SystemInput,
-    game_active: bool,
+    _input: &SystemInput,
+    _game_active: bool,
 ) -> Result<()> {
     if menu.transfer_busy() { return Err(message("busy: close Transfer Games first")); }
-    match action {
-        MenuAction::Open => open_menu(menu, input, reason, game_active).await,
-        MenuAction::Close => close_menu(menu, input, game_active, reason).await,
-        MenuAction::Toggle if menu.snapshot().open => {
-            close_menu(menu, input, game_active, reason).await
-        }
-        MenuAction::Toggle => open_menu(menu, input, reason, game_active).await,
-    }
-}
-
-async fn open_menu(
-    menu: &MenuController,
-    input: &SystemInput,
-    reason: &'static str,
-    game_active: bool,
-) -> Result<()> {
-    if menu.snapshot().open {
-        println!("OpenMenu ignored because the menu is already active.");
-        return Ok(());
-    }
-
-    ensure_menu_client().await?;
-    if let Err(error) = input.set_mode(INTERCEPT_ALL).await {
-        if let Err(restore_error) = input.set_mode(INTERCEPT_PASS).await {
-            eprintln!(
-                "Failed to restore controller input after menu interception failed: {restore_error}"
-            );
-        }
-        return Err(error);
-    }
-    let Some(generation) = menu.open(reason) else {
-        input.set_mode(INTERCEPT_PASS).await?;
-        return Ok(());
-    };
-
-    if menu
-        .wait_until_presented(generation, MENU_PRESENT_TIMEOUT)
-        .await
-    {
-        println!("menu generation={generation} presented");
-        return Ok(());
-    }
-
-    eprintln!("menu generation={generation} failed to present; restoring previous foreground");
-    menu.close("menu-launch-failed", game_active);
-    let restore_result = input.set_mode(INTERCEPT_PASS).await;
-    restore_result?;
-    Err(message(
-        "zaman-menu did not present its surface within 3 seconds",
-    ))
+    // Quickshell's helper owns the overlay's focus/input lease and restoration.
+    // Do not also invoke the retired SDL compositor/interception path here.
+    crate::quickshell_menu::dispatch(action).await
 }
 
 async fn close_menu(
@@ -774,52 +797,29 @@ async fn close_menu(
 ) -> Result<()> {
     if !menu.snapshot().open {
         println!("CloseMenu ignored because the menu is already closed.");
-        return Ok(());
+        let compositor_result = menu.compositor.finish_menu(game_active).await;
+        let input_result = input.set_mode(INTERCEPT_PASS).await;
+        return compositor_result.and(input_result);
     }
 
-    let input_result = input.set_mode(INTERCEPT_PASS).await;
     menu.close(reason, game_active);
-    input_result
-}
-
-async fn ensure_menu_client() -> Result<()> {
-    let connection = Connection::session().await?;
-    if name_has_owner(&connection).await? {
-        return Ok(());
-    }
-
-    println!("zaman-menu is unavailable; requesting zaman-menu.service start.");
-    UserSystemd::connect().await?.start_menu().await?;
-    for _ in 0..60 {
-        if name_has_owner(&connection).await? {
-            return Ok(());
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    Err(message("zaman-menu D-Bus client did not become ready"))
-}
-
-async fn name_has_owner(connection: &Connection) -> Result<bool> {
-    let proxy = Proxy::new(
-        connection,
-        "org.freedesktop.DBus",
-        "/org/freedesktop/DBus",
-        "org.freedesktop.DBus",
-    )
-    .await?;
-    Ok(proxy.call("NameHasOwner", &(MENU_SERVICE)).await?)
+    let compositor_result = menu.compositor.finish_menu(game_active).await;
+    // Always attempt input restoration, including compositor transport failure.
+    let input_result = input.set_mode(INTERCEPT_PASS).await;
+    compositor_result.and(input_result)
 }
 
 async fn run_session(
     launch: ResolvedLaunch,
     controls: mpsc::Receiver<SessionControl>,
+    compositor: crate::sway::SwayController,
 ) -> Result<SessionOutcome> {
     println!(
         "Launching system={} emulator={} ({}) ROM={}",
         launch.system_id, launch.emulator_id, launch.emulator_name, launch.rom_path
     );
     let systemd = UserSystemd::connect().await?;
-    let mut session = Session::new(systemd);
+    let mut session = Session::new(systemd, compositor);
     session.run(&launch.command, controls).await
 }
 
@@ -1043,4 +1043,25 @@ mod tests {
         assert!(!super::should_reconcile_input(true, false, false, true, mode.dirty()));
     }
 
+}
+
+
+#[cfg(test)]
+mod idle_input_regression {
+    use super::should_retry_input;
+
+    #[test]
+    fn healthy_idle_and_zero_controllers_do_not_poll_each_second() {
+        assert!(!should_retry_input(true, false, false, true, true));
+        assert!(!should_retry_input(true, false, false, false, false));
+        assert!(!should_retry_input(true, false, true, false, false));
+    }
+
+    #[test]
+    fn failed_discovery_lost_listener_and_cancelled_mode_get_fast_recovery() {
+        assert!(should_retry_input(false, false, false, false, false));
+        assert!(should_retry_input(true, true, false, false, false));
+        assert!(should_retry_input(true, false, false, true, false));
+        assert!(should_retry_input(true, false, true, true, true));
+    }
 }

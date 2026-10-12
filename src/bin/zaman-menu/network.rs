@@ -18,6 +18,8 @@ pub struct NetworkState {
     pub wifi_enabled: bool,
     pub wifi_device: Option<String>,
     pub wifi_connection: Option<String>,
+    // Actual SSID, independent of the user-editable connection profile name.
+    pub wifi_ssid: Option<String>,
     pub ethernet_connection: Option<String>,
     pub address: Option<String>,
     pub access_points: Vec<AccessPoint>,
@@ -126,7 +128,7 @@ fn read(scan: bool) -> io::Result<NetworkState> {
             .find(|line| !line.is_empty())
             .map(str::to_owned);
     }
-    if scan && wifi_enabled {
+    if wifi_enabled && (scan || state.wifi_connection.is_some()) {
         if let Some(device) = &state.wifi_device {
             let raw = nmcli(&[
                 "-t",
@@ -138,28 +140,41 @@ fn read(scan: bool) -> io::Result<NetworkState> {
                 "ifname",
                 device,
                 "--rescan",
-                "yes",
+                if scan { "yes" } else { "no" },
             ])?;
-            let mut seen = HashSet::new();
-            for line in raw.lines() {
-                let columns = fields(line);
-                if columns.len() != 4 || columns[1].is_empty() || !seen.insert(columns[1].clone()) {
-                    continue;
-                }
-                state.access_points.push(AccessPoint {
-                    active: columns[0] == "*",
-                    ssid: columns[1].clone(),
-                    signal: columns[2].parse().unwrap_or(0),
-                    security: columns[3].clone(),
-                });
+            if state.wifi_connection.is_some() {
+                state.wifi_ssid = connected_ssid(&raw);
             }
-            state
-                .access_points
-                .sort_by(|a, b| b.active.cmp(&a.active).then(b.signal.cmp(&a.signal)));
-            state.saved_profiles = saved_wifi_profiles()?;
+            if scan {
+                let mut seen = HashSet::new();
+                for line in raw.lines() {
+                    let columns = fields(line);
+                    if columns.len() != 4 || columns[1].is_empty() || !seen.insert(columns[1].clone()) {
+                        continue;
+                    }
+                    state.access_points.push(AccessPoint {
+                        active: state.wifi_ssid.as_deref() == Some(columns[1].as_str()),
+                        ssid: columns[1].clone(),
+                        signal: columns[2].parse().unwrap_or(0),
+                        security: columns[3].clone(),
+                    });
+                }
+                state
+                    .access_points
+                    .sort_by(|a, b| b.active.cmp(&a.active).then(b.signal.cmp(&a.signal)));
+                state.saved_profiles = saved_wifi_profiles()?;
+            }
         }
     }
     Ok(state)
+}
+
+fn connected_ssid(raw: &str) -> Option<String> {
+    raw.lines().find_map(|line| {
+        let columns = fields(line);
+        (columns.len() == 4 && columns[0] == "*" && !columns[1].is_empty())
+            .then(|| columns[1].clone())
+    })
 }
 
 // Match the actual Wi-Fi SSID, rather than the user-editable profile name.
@@ -285,6 +300,16 @@ mod tests {
             fields(r"wlan0:wifi:connected:My\:Home\\WiFi"),
             ["wlan0", "wifi", "connected", "My:Home\\WiFi"]
         );
+    }
+
+    #[test]
+    fn active_ssid_handles_duplicate_rows_and_escaped_names() {
+        let raw = r" :My\:Home\\WiFi:90:WPA2
+*:My\:Home\\WiFi:70:WPA2
+ :Guest:60:--";
+        assert_eq!(connected_ssid(raw).as_deref(), Some("My:Home\\WiFi"));
+        assert_eq!(connected_ssid(" :Guest:60:--"), None);
+        assert_eq!(connected_ssid("*::70:WPA2"), None);
     }
 
     #[cfg(unix)]

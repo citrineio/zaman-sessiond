@@ -71,3 +71,14 @@ zamanctl version   # must print the new number
 ## Current work — 0.6.6, 2026-09-17 (OPEN)
 
 Single feature: Transfer Games standalone GUI from the library menu, paired with transfer 0.4.0. Baseline 0.6.5 remains the last installed/accepted version. Source implementation/reviews/checkpoints prepared; user formatting/build/tests/install/hardware evidence still pending. No commit or push. Keep the user-side execution split and post-install closeout gate. See `session-0.6.6.md` and `deploy-0.6.6.md`. Next release: background transfer with automatic Pegasus reload.
+
+## Native controller management candidate — 2026-10-06
+
+The owner confirmed Bluetooth menu input works after setting InputPlumber 0.78.0
+ManageAllDevices=true. Prepare a service-start helper/drop-in to reapply this
+native setting after starts/restarts using stock profiles. It supersedes the
+uninstalled generic YAML proposal. See `controller-discovery.md`.
+This configuration-only integration retains the current 0.6.12 binary version;
+the owner plans a 0.7.0 commit/push after extensive testing. Startup persistence,
+gameplay, reconnect and other controllers remain pending. No assistant builds,
+installation or tests. No controller-ready UI is claimed.

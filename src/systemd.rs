@@ -150,6 +150,13 @@ impl UserSystemd {
         Err(message("systemd UnitRemoved stream closed"))
     }
 
+    pub async fn control_group(&self, game: &GameHandle) -> Result<String> {
+        let path: OwnedObjectPath = self.manager().await?.call("GetUnit", &(game.unit(),)).await?;
+        let service = Proxy::new(&self.connection, SERVICE, path,
+            "org.freedesktop.systemd1.Service").await?;
+        Ok(service.get_property("ControlGroup").await?)
+    }
+
     pub async fn stop(&self, game: &GameHandle) -> Result<()> {
         let manager = self.manager().await?;
         let loaded: zbus::Result<OwnedObjectPath> = manager.call("GetUnit", &(game.unit(),)).await;

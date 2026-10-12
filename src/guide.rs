@@ -100,3 +100,109 @@ mod tests {
         );
     }
 }
+
+
+// A single Guide cycle spans duplicate USB/Bluetooth targets. Lifecycle resets
+// clear the state without issuing a close. Closing remains release-triggered.
+#[derive(Debug, Default)]
+pub struct GuideRouter {
+    pressed: std::collections::BTreeSet<String>,
+    close: Option<(String, GuideClose)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuideClose {
+    pub session: String,
+    pub identity: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoutedGuide { None, Open, CloseArmed }
+
+impl GuideRouter {
+    pub fn clear(&mut self) { self.pressed.clear(); self.close = None; }
+
+    pub fn needs_status(&self, target: &str) -> bool {
+        !self.pressed.contains(target) && self.pressed.is_empty()
+    }
+
+    pub fn suppress_press(&mut self, target: &str) {
+        self.pressed.insert(target.to_owned());
+    }
+
+    pub fn press(&mut self, target: &str, status: &str, session: &str, identity: &str) -> RoutedGuide {
+        let first = self.pressed.is_empty();
+        if !self.pressed.insert(target.to_owned()) || !first { return RoutedGuide::None; }
+        match status {
+            "hidden" => RoutedGuide::Open,
+            "open" => {
+                self.close = Some((target.to_owned(), GuideClose { session: session.to_owned(), identity: identity.to_owned() }));
+                RoutedGuide::CloseArmed
+            }
+            _ => RoutedGuide::None,
+        }
+    }
+
+    pub fn release(&mut self, target: &str) -> Option<GuideClose> {
+        if !self.pressed.remove(target) { return None; }
+        if self.close.as_ref().is_some_and(|(owner, _)| owner == target) {
+            return self.close.take().map(|(_, session)| session);
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod router_tests {
+    use super::*;
+
+    #[test]
+    fn opening_release_never_closes_and_next_cycle_can_close() {
+        let mut route = GuideRouter::default();
+        assert_eq!(route.press("usb", "hidden", "i:0", "live-source"), RoutedGuide::Open);
+        assert_eq!(route.release("usb"), None);
+        assert_eq!(route.press("usb", "open", "i:1", "live-source"), RoutedGuide::CloseArmed);
+        assert_eq!(route.release("usb"), Some(GuideClose { session: "i:1".into(), identity: "live-source".into() }));
+    }
+
+    #[test]
+    fn duplicate_transport_and_repeat_cannot_toggle_twice() {
+        let mut route = GuideRouter::default();
+        assert_eq!(route.press("usb", "hidden", "i:0", "live-source"), RoutedGuide::Open);
+        assert!(!route.needs_status("usb"));
+        route.suppress_press("usb");
+        assert!(!route.needs_status("bt"));
+        route.suppress_press("bt");
+        assert_eq!(route.release("usb"), None);
+        assert_eq!(route.release("bt"), None);
+        assert!(route.needs_status("usb"));
+    }
+
+    #[test]
+    fn only_arming_source_release_can_close_its_session() {
+        let mut route = GuideRouter::default();
+        route.press("usb", "open", "i:7", "live-source");
+        route.suppress_press("bt");
+        assert_eq!(route.release("bt"), None);
+        assert_eq!(route.release("usb"), Some(GuideClose { session: "i:7".into(), identity: "live-source".into() }));
+        assert_eq!(route.release("usb"), None);
+    }
+
+    #[test]
+    fn controller_or_owner_loss_cancels_close_without_closing() {
+        let mut route = GuideRouter::default();
+        route.press("usb", "open", "i:9", "live-source");
+        route.clear();
+        assert_eq!(route.release("usb"), None);
+        assert!(route.needs_status("bt"));
+    }
+
+    #[test]
+    fn transition_and_busy_press_cannot_open_or_arm_close() {
+        for state in ["opening", "closing", "busy"] {
+            let mut route = GuideRouter::default();
+            assert_eq!(route.press("usb", state, "i:1", "live-source"), RoutedGuide::None);
+            assert_eq!(route.release("usb"), None);
+        }
+    }
+}

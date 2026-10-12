@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# On-demand Quickshell notification trial; no boot or session policy changes.
+set -Eeuo pipefail
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+usage() { printf 'Usage: %s [start [OUTPUT]|demo|stop|status|logs]\n' "${0##*/}"; }
+action=${1:-start}
+unit=zaman-toast-trial.service
+case $action in
+    -h|--help|help) usage; exit ;;
+    start) [[ $# -le 2 ]] || { usage; exit 2; } ;;
+    demo|stop|status|logs) [[ $# -le 1 ]] || { usage; exit 2; } ;;
+    *) usage; exit 2 ;;
+esac
+[[ $(id -u) -ne 0 ]] || die 'Run as the kiosk user, not root.'
+command -v systemctl >/dev/null || die 'Missing systemctl.'
+case $action in
+    stop) systemctl --user stop "$unit"; exit ;;
+    status) exec systemctl --user status --no-pager "$unit" ;;
+    logs) exec journalctl --user -u "$unit" -n 80 --no-pager ;;
+    demo)
+        systemctl --user is-active --quiet "$unit" || die 'Start the toast trial first.'
+        command -v notify-send >/dev/null || die 'Install libnotify-bin yourself first.'
+        notify-send -a Zaman -t 6000 -h string:x-zaman-kind:network -h string:x-zaman-state:connected \
+            'Wi-Fi connected' 'DEMO: Connected to your home network.'
+        notify-send -a Zaman -t 8000 -h string:x-zaman-kind:audio \
+            'Audio output changed' 'DEMO: HDMI / DisplayPort audio selected.'
+        notify-send -a Zaman -t 10000 -h string:x-zaman-kind:input -h string:x-zaman-state:disconnected \
+            'Controller disconnected' 'DEMO: Reconnect your controller to continue.'
+        exit ;;
+esac
+
+for program in quickshell systemd-run busctl swaymsg python3; do
+    command -v "$program" >/dev/null || die "Missing $program; install dependencies yourself first."
+done
+if systemctl --user is-active --quiet "$unit"; then
+    printf 'Toast trial already running. Use %s demo, logs or stop.\n' "$0"
+    exit 0
+fi
+manager_environment=$(systemctl --user show-environment)
+toast_runtime=
+toast_wayland=
+toast_swaysock=
+while IFS= read -r assignment; do
+    case $assignment in
+        XDG_RUNTIME_DIR=*) toast_runtime=${assignment#*=} ;;
+        WAYLAND_DISPLAY=*) toast_wayland=${assignment#*=} ;;
+        SWAYSOCK=*) toast_swaysock=${assignment#*=} ;;
+    esac
+done <<< "$manager_environment"
+toast_runtime=${toast_runtime:-/run/user/$(id -u)}
+[[ -d $toast_runtime && -n $toast_wayland ]] || die 'No imported graphical session; start Sway first.'
+case $toast_wayland in /*) toast_socket=$toast_wayland ;; *) toast_socket=$toast_runtime/$toast_wayland ;; esac
+[[ -S $toast_socket && -S $toast_swaysock ]] || die 'Imported Wayland/Sway sockets are unavailable.'
+toast_output=${2:-HDMI-A-1}
+[[ -n $toast_output && $toast_output != -* ]] || die 'Invalid output name.'
+toast_outputs=$(SWAYSOCK="$toast_swaysock" swaymsg -r -t get_outputs) || die 'Cannot query the imported Sway session.'
+python3 -c 'import json,sys; sys.exit(0 if any(o.get("name")==sys.argv[1] and o.get("active") for o in json.load(sys.stdin)) else 1)' \
+    "$toast_output" <<< "$toast_outputs" || die "Output $toast_output is not active."
+notification_owner=$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus \
+    NameHasOwner s org.freedesktop.Notifications) || die 'Cannot query the user notification bus.'
+[[ $notification_owner == 'b false' ]] || die 'Another notification server owns the bus. Inspect it with: busctl --user status org.freedesktop.Notifications'
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+toast_shell=$script_dir/../experiments/quickshell/zaman-toasts/shell.qml
+[[ -r $toast_shell ]] || die "Missing shell config: $toast_shell"
+systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+if ! systemd-run --user --quiet --collect --unit="$unit" --service-type=dbus \
+    --property=BusName=org.freedesktop.Notifications --property=TimeoutStartSec=10s \
+    --expand-environment=no --description='Zaman Quickshell toast trial' \
+    --setenv="XDG_RUNTIME_DIR=$toast_runtime" --setenv="WAYLAND_DISPLAY=$toast_wayland" \
+    --setenv="ZAMAN_TOAST_OUTPUT=$toast_output" --setenv=QT_QPA_PLATFORM=wayland --setenv=QS_NO_RELOAD_POPUP=1 \
+    -- "$(command -v quickshell)" -p "$toast_shell"; then
+    journalctl --user -u "$unit" -n 40 --no-pager >&2
+    die 'Quickshell failed to start; inspect its journal.'
+fi
+systemctl --user is-active --quiet "$unit" || die "Toast server is not active; run $0 logs."
+printf 'Toast trial started on %s. Demo: %s demo\nStop: %s stop\n' "$toast_output" "$0" "$0"

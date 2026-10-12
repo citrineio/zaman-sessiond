@@ -4,8 +4,19 @@ use crate::registry::{Registry, ResolvedLaunch};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::{mpsc, oneshot};
 use zaman_sessiond::contract::{MenuContextTuple, INTERFACE, PATH, VERSION};
+use zaman_sessiond::display::{DisplayManager, Mode};
 use zbus::object_server::SignalEmitter;
 use zbus::{fdo, interface, Connection};
+
+async fn display_request(
+    operation: impl FnOnce() -> std::result::Result<zaman_sessiond::display::DisplayState, String>
+        + Send + 'static,
+) -> fdo::Result<String> {
+    let state = tokio::task::spawn_blocking(operation).await
+        .map_err(|e| fdo::Error::Failed(e.to_string()))?
+        .map_err(fdo::Error::Failed)?;
+    serde_json::to_string(&state).map_err(|e| fdo::Error::Failed(e.to_string()))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
@@ -131,6 +142,7 @@ pub struct SessionApi {
     status: SharedStatus,
     menu: MenuController,
     commands: mpsc::Sender<ApiCommand>,
+    display: DisplayManager,
 }
 
 pub async fn publish_menu_events(
@@ -192,12 +204,14 @@ impl SessionApi {
         status: SharedStatus,
         menu: MenuController,
         commands: mpsc::Sender<ApiCommand>,
+        display: DisplayManager,
     ) -> Self {
         Self {
             registry,
             status,
             menu,
             commands,
+            display,
         }
     }
 
@@ -245,6 +259,31 @@ impl SessionApi {
 
 #[interface(name = "com.kawnelectro.Zaman.Session1")]
 impl SessionApi {
+    /// JSON is versioned by the Session1 contract and shared Rust snapshot type.
+    async fn display_status(&self) -> fdo::Result<String> {
+        let display = self.display.clone();
+        display_request(move || display.status()).await
+    }
+
+    async fn preview_display(&self, generation: u64, output: &str,
+        width: u32, height: u32, refresh: u32) -> fdo::Result<String> {
+        self.require_transfer_idle()?;
+        self.require_open_menu()?;
+        let display = self.display.clone();
+        let output = output.to_string();
+        display_request(move || display.preview(generation, output, Mode { width, height, refresh })).await
+    }
+
+    async fn confirm_display(&self, generation: u64, token: u64) -> fdo::Result<String> {
+        let display = self.display.clone();
+        display_request(move || display.confirm(generation, token)).await
+    }
+
+    async fn revert_display(&self, generation: u64, token: u64) -> fdo::Result<String> {
+        let display = self.display.clone();
+        display_request(move || display.revert(generation, token)).await
+    }
+
     #[zbus(out_args("generation"))]
     async fn start_transfer(&self, menu_generation: u64) -> fdo::Result<u64> {
         let (reply, response) = oneshot::channel();
@@ -320,7 +359,9 @@ impl SessionApi {
 
     async fn exit_game(&self) -> fdo::Result<()> {
         self.require_transfer_idle()?;
-        self.require_open_menu()?;
+        // ExitGame is a session action shared by the fallback menu, Quickshell
+        // and CLI. Modern overlays do not set the fallback menu's open flag.
+        // Keep shutdown under the existing worker and its graceful stop policy.
         self.status.mark_stopping();
         self.send_command(ApiCommand::ExitGame).await
     }
@@ -402,9 +443,10 @@ impl SessionApi {
     }
 
     #[zbus(out_args("open", "generation", "reason"))]
-    fn menu_status(&self) -> (bool, u64, String) {
-        let menu = self.menu.snapshot();
-        (menu.open, menu.generation, menu.reason)
+    async fn menu_status(&self) -> fdo::Result<(bool, u64, String)> {
+        let shell = crate::quickshell_menu::status().await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        Ok((shell.presented_or_pending(), shell.generation, format!("quickshell:{}", shell.status)))
     }
 
     #[zbus(out_args("foreground", "return_target", "reason"))]

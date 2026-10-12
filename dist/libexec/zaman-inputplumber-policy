@@ -1,0 +1,41 @@
+#!/bin/sh
+# Enable upstream profiles after each InputPlumber start. Type=dbus can report
+# bus ownership before the Manager interface exists, so readiness is retried.
+set -eu
+
+# The service uses the default true; explicit false is only for rollback to a
+# previously saved management setting.
+input_management=${1:-true}
+if [ "$#" -gt 1 ]; then
+    printf '%s\n' 'Usage: zaman-inputplumber-policy [true|false]' >&2
+    exit 2
+fi
+case "$input_management" in
+    true|false) ;;
+    *) printf '%s\n' 'Management value must be true or false.' >&2; exit 2 ;;
+esac
+
+attempt=0
+last_error='Manager interface did not become ready.'
+while [ "$attempt" -lt 12 ]; do
+    if reply=$(/usr/bin/busctl --system --timeout=1s set-property \
+        org.shadowblip.InputPlumber /org/shadowblip/InputPlumber/Manager \
+        org.shadowblip.InputManager ManageAllDevices b "$input_management" 2>&1); then
+        if reply=$(/usr/bin/busctl --system --timeout=1s get-property \
+            org.shadowblip.InputPlumber /org/shadowblip/InputPlumber/Manager \
+            org.shadowblip.InputManager ManageAllDevices 2>&1); then
+            if [ "$reply" = "b $input_management" ]; then
+                printf 'Zaman: native InputPlumber management set to %s.\n' "$input_management"
+                exit 0
+            fi
+        fi
+    fi
+    last_error=$reply
+    attempt=$((attempt + 1))
+    if [ "$attempt" -lt 12 ]; then
+        sleep 0.25
+    fi
+done
+
+printf 'Zaman: cannot set native InputPlumber management to %s: %s\n' "$input_management" "$last_error" >&2
+exit 1

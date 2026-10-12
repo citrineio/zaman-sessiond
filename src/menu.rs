@@ -104,6 +104,7 @@ impl Default for MenuState {
 
 #[derive(Clone, Debug)]
 pub struct MenuController {
+    pub compositor: crate::sway::SwayController,
     state: Arc<Mutex<MenuState>>,
     events: mpsc::UnboundedSender<MenuEvent>,
     presented: watch::Sender<u64>,
@@ -117,6 +118,7 @@ impl MenuController {
         let (transfer_changed, _) = watch::channel(0);
         (
             Self {
+                compositor: crate::sway::SwayController::from_environment(),
                 state: Arc::new(Mutex::new(MenuState::default())),
                 events,
                 presented,
