@@ -89,13 +89,13 @@ impl SystemInput {
 
     async fn refresh(&mut self, mode: u32, force_monitor: bool) -> InputRefresh {
         let inventory = self.input.discover().await;
-        self.finish_discovery(inventory, mode, force_monitor).await
+        self.finish_discovery(inventory, Some(mode), force_monitor).await
     }
 
     async fn finish_discovery(
         &mut self,
         inventory: Result<Inventory>,
-        mode: u32,
+        mode: Option<u32>,
         force_monitor: bool,
     ) -> InputRefresh {
         let result = match inventory {
@@ -123,7 +123,7 @@ impl SystemInput {
     async fn apply_inventory(
         &mut self,
         inventory: Inventory,
-        mode: u32,
+        mode: Option<u32>,
         force_monitor: bool,
     ) -> Result<InputRefresh> {
         let changed = !self.initialized || inventory != self.inventory;
@@ -139,7 +139,9 @@ impl SystemInput {
         }
 
         if inventory.has_system_input() {
-            self.mode.apply(self.input.set_intercept_mode(&inventory, mode)).await?;
+            if let Some(mode) = mode {
+                self.mode.apply(self.input.set_intercept_mode(&inventory, mode)).await?;
+            }
         }
 
         if changed {
@@ -202,6 +204,7 @@ async fn finish_shutdown(
 pub async fn recover_runtime() -> Result<()> {
     let systemd = UserSystemd::connect().await?;
     systemd.stop_transfer().await?;
+    for id in ["dukkan", "steam"] { systemd.stop_storefront(id).await?; }
     if systemd.recover_orphaned_game().await? {
         println!("Stopped orphaned zaman-game.service during recovery; returning to library.");
     }
@@ -247,6 +250,8 @@ pub async fn run_worker(
     );
     input_recovery.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut sessions: JoinSet<Result<SessionOutcome>> = JoinSet::new();
+    let mut storefront_tasks = JoinSet::new();
+    let mut storefront_controls = std::collections::BTreeMap::<String, mpsc::Sender<()>>::new();
     let mut transfers = JoinSet::new();
     let mut transfer_stop: Option<watch::Sender<bool>> = None;
     let mut transfer_pressed = BTreeSet::<String>::new();
@@ -270,6 +275,7 @@ pub async fn run_worker(
         Duration::from_millis(250));
     compositor_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut compositor_error: Option<String> = None;
+    let mut delegated_guide = false;
 
     loop {
         tokio::select! {
@@ -295,6 +301,56 @@ pub async fn run_worker(
                 }
                 match command {
                     Some(ApiCommand::Guarded { .. }) => unreachable!("nested guarded command"),
+                    Some(ApiCommand::Storefront { action, id, generation, reply }) => {
+                        let result = async {
+                            if !menu.compositor.enabled() { return Err(message("managed storefronts require the graphical Sway environment")); }
+                            if slot.is_busy() || active_control.is_some()
+                                || matches!(status.snapshot().state.as_str(), "Active" | "Stopping") {
+                                return Err(message("busy: a game or session operation is in flight"));
+                            }
+                            // QML must hide its layer and release input before changing focus.
+                            if crate::quickshell_menu::status().await?.input_owned {
+                                return Err(message("close the Guide menu before changing storefronts"));
+                            }
+                            crate::storefront::unit(&id)?;
+                            match action.as_str() {
+                                "launch" => {
+                                    if menu.storefronts.has_game() && menu.storefronts.active().as_deref() != Some(id.as_str()) {
+                                        return Err(message("close the storefront game before switching"));
+                                    }
+                                    if menu.storefronts.entry(&id).is_some_and(|e| e.phase == "Running") {
+                                        menu.storefronts.activate(&id)?;
+                                    } else {
+                                        let config = crate::storefront::Config::load(&id)?;
+                                        let command = config.command()?;
+                                        let generation = menu.storefronts.reserve(&id, config.native_guide)?;
+                                        let (control, controls) = mpsc::channel(1);
+                                        storefront_controls.insert(id.clone(), control);
+                                        storefront_tasks.spawn(crate::storefront::run(id.clone(), generation, command,
+                                            menu.storefronts.clone(), menu.compositor.clone(), controls));
+                                    }
+                                    menu.storefront_foreground(true);
+                                    menu.compositor.activate_storefront(Some(id.clone())).await?;
+                                }
+                                "home" | "close" => {
+                                    menu.storefronts.validate_leave(&id, generation, action == "close")?;
+                                    if action == "close" {
+                                        menu.storefronts.update(&id, generation, "Stopping", String::new());
+                                        storefront_controls.get(&id).ok_or_else(|| message("storefront supervisor unavailable"))?
+                                            .send(()).await.map_err(|_| message("storefront supervisor stopped"))?;
+                                    } else {
+                                        menu.storefronts.home();
+                                        menu.storefront_foreground(false);
+                                        menu.compositor.activate_storefront(None).await?;
+                                    }
+                                }
+                                _ => return Err(message("unknown storefront action")),
+                            }
+                            system_input.set_mode(if menu.storefronts.native_guide() { INTERCEPT_NONE } else { INTERCEPT_PASS }).await
+                        }.await.map_err(|e| e.to_string());
+                        guide_buttons.clear();
+                        let _ = reply.send(result);
+                    }
                     Some(ApiCommand::StartTransfer { menu_generation, reply }) => {
                         let reserved = if slot.is_busy() || active_control.is_some()
                             || matches!(status.snapshot().state.as_str(), "Active" | "Stopping") {
@@ -316,8 +372,8 @@ pub async fn run_worker(
                         }
                     }
                     Some(ApiCommand::Launch(launch)) => {
-                        if active_control.is_some() {
-                            status.fail("worker received a second launch while active");
+                        if active_control.is_some() || menu.storefronts.active().is_some() || menu.storefronts.has_game() {
+                            status.fail("worker received a launch while a game or storefront owns the foreground");
                             continue;
                         }
                         let (token, identity) = match begin_or_reject(
@@ -487,6 +543,13 @@ pub async fn run_worker(
                                 while let Some(result) = sessions.join_next().await {
                                     record_completion(&status, result);
                                 }
+                                for control in storefront_controls.values() { let _ = control.send(()).await; }
+                                while let Some(result) = storefront_tasks.join_next().await {
+                                    if let Ok((id, _, result)) = result {
+                                        if let Err(error) = result { eprintln!("Storefront shutdown: {error}"); }
+                                        let _ = menu.compositor.storefront_ended(id).await;
+                                    }
+                                }
                                 menu.compositor.game_ended().await
                             },
                             system_input.set_mode(INTERCEPT_NONE),
@@ -572,7 +635,14 @@ pub async fn run_worker(
                     };
                     // Resolve mode and listener health now, not when the scan
                     // started: a menu transition may have occurred meanwhile.
-                    let mode = if menu.snapshot().open || menu.transfer_busy() { INTERCEPT_ALL } else { INTERCEPT_PASS };
+                    let shell_open = crate::quickshell_menu::status().await
+                        .map(|s| s.input_owned).unwrap_or(true);
+                    // Resident acquisition and hotplug recovery own interception.
+                    // A daemon ALL write would strand a newly connected controller
+                    // because the helper correctly refuses an unknown ALL owner.
+                    let mode = if menu.snapshot().open || menu.transfer_busy() { Some(INTERCEPT_ALL) }
+                        else if shell_open { None }
+                        else if menu.storefronts.native_guide() { Some(INTERCEPT_NONE) } else { Some(INTERCEPT_PASS) };
                     let refresh = system_input.finish_discovery(
                         inventory,
                         mode,
@@ -618,6 +688,32 @@ pub async fn run_worker(
                     None => {}
                 }
             }
+            completed = storefront_tasks.join_next(), if !storefront_tasks.is_empty() => {
+                if let Some(result) = completed {
+                    match result {
+                        Ok((id, generation, result)) => {
+                            let was_active = menu.storefronts.active().as_deref() == Some(id.as_str());
+                            let error = result.err().map(|e| e.to_string()).unwrap_or_default();
+                            menu.storefronts.update(&id, generation, if error.is_empty() { "Exited" } else { "Failed" }, error.clone());
+                            storefront_controls.remove(&id);
+                            if let Err(error) = menu.compositor.storefront_ended(id.clone()).await {
+                                eprintln!("Storefront focus recovery: {error}");
+                            }
+                            if was_active {
+                                menu.storefront_foreground(false);
+                                guide_buttons.clear();
+                                if let Err(error) = system_input.set_mode(INTERCEPT_PASS).await { eprintln!("Storefront input recovery: {error}"); }
+                            }
+                            if !error.is_empty() { eprintln!("Storefront {id} failed: {error}"); }
+                        }
+                        Err(error) => {
+                            // A panicked supervisor has uncertain cleanup. Do not silently
+                            // permit a replacement to inherit its unit or input ownership.
+                            eprintln!("Storefront supervisor failed; restart sessiond for recovery: {error}");
+                        }
+                    }
+                }
+            }
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 if let Some(result) = completed {
                     let power_method = requested_power_method(&result);
@@ -641,6 +737,19 @@ pub async fn run_worker(
                 // Transfer retains foreground ownership until its existing
                 // supervisor confirms cleanup; never steal focus from it.
                 if !menu.transfer_busy() {
+                    let native = menu.storefronts.native_guide();
+                    if native != delegated_guide {
+                        if crate::quickshell_menu::status().await.map(|s| !s.input_owned).unwrap_or(false) {
+                            if system_input.set_mode(if native { INTERCEPT_NONE } else { INTERCEPT_PASS }).await.is_ok() {
+                                delegated_guide = native;
+                                guide_buttons.clear();
+                            }
+                        }
+                    }
+                    match menu.compositor.steam_game_running().await {
+                        Ok(game) => menu.storefronts.set_game("steam", game),
+                        Err(error) => eprintln!("Steam game classification unavailable: {error}"),
+                    }
                     match menu.compositor.reconcile(menu.snapshot().open, active_control.is_some()).await {
                         Ok(()) => { if compositor_error.take().is_some() { println!("Sway supervision recovered."); } }
                         Err(error) => {
@@ -707,6 +816,14 @@ async fn handle_system_input(
     _game_active: bool,
     guide_buttons: &mut GuideRouter,
 ) -> Result<()> {
+    if menu.storefronts.native_guide() {
+        if let SystemInputEvent::Guide { .. } = &event {
+            if crate::quickshell_menu::status().await.map(|s| !s.presented_or_pending()).unwrap_or(false) {
+                guide_buttons.clear();
+                return Ok(());
+            }
+        }
+    }
     match event {
         SystemInputEvent::Guide { target, action } => {
             match action {

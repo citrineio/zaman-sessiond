@@ -1,5 +1,7 @@
 # zaman-sessiond
 
+See [Sprint 1 storefront candidate](docs/sprint1-storefronts.md) for the paired source branches and device acceptance.
+
 Current source candidate: **0.6.12** (menu cell icons and power confirmation; device validation pending).
 See [0.6.12 update and acceptance](docs/menu-power-0.6.12.md).
 See [0.6.11 update and acceptance](docs/menu-bluetooth-0.6.11.md).

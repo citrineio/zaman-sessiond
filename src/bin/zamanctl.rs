@@ -20,6 +20,17 @@ async fn main() -> Result<()> {
             let generation: u64 = proxy.call("StartTransfer", &(0_u64,)).await?;
             println!("Transfer Games launch reserved: {generation}");
         }
+        [command, action, id] if command == "storefront" && action == "launch" => {
+            let _: () = proxy.call("StorefrontAction", &(action, id, "0")).await?;
+        }
+        [command, action] if command == "storefront" && (action == "home" || action == "close") => {
+            let context: (String, u64, String, String, bool, String) = proxy.call("StorefrontStatus", &()).await?;
+            let _: () = proxy.call("StorefrontAction", &(action, &context.0, context.1.to_string())).await?;
+        }
+        [command] if command == "storefront-status" => {
+            let context: (String, u64, String, String, bool, String) = proxy.call("StorefrontStatus", &()).await?;
+            println!("id={} generation={} phase={} guide={} game={} error={}", context.0, context.1, context.2, context.3, context.4, context.5);
+        }
         [command] if command == "status" => {
             print_status(&read_status(&proxy).await?);
             print_foreground_status(&read_foreground_status(&proxy).await?);
@@ -64,7 +75,7 @@ async fn main() -> Result<()> {
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: zamanctl status | menu {open|close|toggle} | menu-status | version | transfer | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
+                "usage: zamanctl storefront launch {dukkan|steam} | storefront {home|close} | storefront-status | status | menu {open|close|toggle} | menu-status | version | transfer | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
             )
             .into())
         }

@@ -98,7 +98,7 @@ async fn foreground(connection: &Connection) -> Result<String> {
 }
 
 fn owns_foreground(foreground: &str) -> bool {
-    matches!(foreground, "library" | "game")
+    matches!(foreground, "library" | "game" | "storefront")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -388,7 +388,7 @@ fn restore_target(tree: &Value, saved: Option<&Window>, initial: &str, current: 
             if views.iter().any(|v| v.id == saved.id && v.pid == saved.pid) { return Some(saved.id); }
         }
     }
-    if current == "game" {
+    if current == "game" || current == "storefront" {
         views.iter().find(|v| v.focused).map(|v| v.id)
     } else {
         views.iter().find(|v| v.app_id == "org.pegasus-frontend.pegasus-fe").map(|v| v.id)
@@ -722,7 +722,10 @@ async fn run_session(session: &Connection, commands: &mut mpsc::Receiver<String>
         // Recheck after asynchronous setup, before showing an exclusive layer.
         if foreground(&session).await? != initial { return Err(message("foreground changed during preview startup")); }
         startup_timing(startup_started, &mut phase_started, "foreground-recheck");
+        let proxy = Proxy::new(session, SERVICE, PATH, INTERFACE).await?;
+        let store: (String, u64, String, String, bool, String) = proxy.call("StorefrontStatus", &()).await?;
         emit(json!({"type":"ready", "foreground":initial,
+            "storefront":store.0, "storeGeneration":store.1.to_string(), "storeGame":store.4, "guideOwner":store.3,
             "display":true,
             "controllers":if startup_lost { 0 } else { lease.devices.values().filter(|device| lease.touched.contains(&device.path) && !device.dbus.is_empty()).count() },
             "devices":if startup_lost { Vec::new() } else { lease.views() }}))?;

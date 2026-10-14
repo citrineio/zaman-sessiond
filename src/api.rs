@@ -29,6 +29,8 @@ pub enum MenuAction {
 pub enum ApiCommand {
     Guarded { command: Box<ApiCommand>, reply: oneshot::Sender<std::result::Result<(), String>> },
     StartTransfer { menu_generation: u64, reply: oneshot::Sender<std::result::Result<u64, String>> },
+    Storefront { action: String, id: String, generation: u64,
+        reply: oneshot::Sender<std::result::Result<(), String>> },
     Launch(ResolvedLaunch),
     Stop,
     Menu {
@@ -315,8 +317,24 @@ impl SessionApi {
     #[zbus(signal)]
     async fn transfer_input(signal_emitter: &SignalEmitter<'_>, generation: u64, event: &str, value: f64) -> zbus::Result<()>;
 
+    #[zbus(out_args("id", "generation", "phase", "guide_owner", "game_running", "error"))]
+    fn storefront_status(&self) -> (String, u64, String, String, bool, String) {
+        self.menu.storefronts.context()
+    }
+
+    async fn storefront_action(&self, action: &str, id: &str, generation: &str) -> fdo::Result<()> {
+        let generation = parse_transfer_generation(generation)?;
+        let (reply, response) = oneshot::channel();
+        self.send_command(ApiCommand::Storefront { action: action.into(), id: id.into(), generation, reply }).await?;
+        response.await.map_err(|_| fdo::Error::Failed("storefront worker stopped".into()))?
+            .map_err(fdo::Error::Failed)
+    }
+
     async fn launch(&self, system_id: &str, rom_path: &str) -> fdo::Result<()> {
         self.require_transfer_idle()?;
+        if self.menu.storefronts.active().is_some() || self.menu.storefronts.has_game() {
+            return Err(fdo::Error::Failed("return to library and close any storefront game before launching".into()));
+        }
         if self.menu.snapshot().open {
             return Err(fdo::Error::Failed(
                 "close the Zaman menu before launching a game".to_string(),
@@ -359,6 +377,9 @@ impl SessionApi {
 
     async fn exit_game(&self) -> fdo::Result<()> {
         self.require_transfer_idle()?;
+        if self.menu.storefronts.active().is_some() {
+            return Err(fdo::Error::Failed("exit the Steam game using Steam; the client is an independent session".into()));
+        }
         // ExitGame is a session action shared by the fallback menu, Quickshell
         // and CLI. Modern overlays do not set the fallback menu's open flag.
         // Keep shutdown under the existing worker and its graceful stop policy.
@@ -453,7 +474,9 @@ impl SessionApi {
     fn foreground_status(&self) -> (String, String, String) {
         let menu = self.menu.snapshot();
         (
-            menu.foreground.as_str().to_string(),
+            if menu.foreground == crate::menu::Foreground::Storefront && self.menu.storefronts.context().4 {
+                "game".to_string()
+            } else { menu.foreground.as_str().to_string() },
             menu.return_target
                 .map(|target| target.as_str().to_string())
                 .unwrap_or_default(),

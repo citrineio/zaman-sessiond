@@ -13,7 +13,10 @@ pub struct ShellStatus {
     #[serde(rename = "sessionKey")]
     pub session_key: String,
     pub generation: u64,
+    #[serde(default = "conservative_input_owner", rename = "inputOwned")] pub input_owned: bool,
 }
+
+fn conservative_input_owner() -> bool { true }
 
 impl ShellStatus {
     pub fn presented_or_pending(&self) -> bool {

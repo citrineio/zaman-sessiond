@@ -30,7 +30,7 @@ done
 for target in "${targets[@]}"; do
     [[ -f $target ]] || die "Installed baseline missing: $target"
 done
-for unit in zaman-game.service zaman-transfer.service zaman-transfer-gui.service; do
+for unit in zaman-game.service zaman-transfer.service zaman-transfer-gui.service zaman-store-dukkan.service zaman-store-steam.service; do
     state=$(systemctl --user show "$unit" -p ActiveState --value) || die "Cannot inspect $unit"
     case $state in inactive|failed|'') ;; *) die "Stop $unit first (state: $state)." ;; esac
 done

@@ -11,6 +11,7 @@ mod registry;
 mod session;
 mod systemd;
 mod sway;
+mod storefront;
 mod transfer;
 
 use crate::api::{publish_menu_events, ApiCommand, SessionApi, SharedStatus};

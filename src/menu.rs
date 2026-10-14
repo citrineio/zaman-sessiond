@@ -9,6 +9,7 @@ use zaman_sessiond::contract::MenuContextTuple;
 pub enum Foreground {
     Library,
     Game,
+    Storefront,
     Menu,
     Transfer,
 }
@@ -18,6 +19,7 @@ impl Foreground {
         match self {
             Self::Library => "library",
             Self::Game => "game",
+            Self::Storefront => "storefront",
             Self::Menu => "menu",
             Self::Transfer => "transfer",
         }
@@ -34,6 +36,7 @@ impl fmt::Display for Foreground {
 pub enum ReturnTarget {
     Library,
     Game,
+    Storefront,
 }
 
 impl ReturnTarget {
@@ -41,6 +44,7 @@ impl ReturnTarget {
         match self {
             Self::Library => "library",
             Self::Game => "game",
+            Self::Storefront => "storefront",
         }
     }
 }
@@ -105,6 +109,7 @@ impl Default for MenuState {
 #[derive(Clone, Debug)]
 pub struct MenuController {
     pub compositor: crate::sway::SwayController,
+    pub storefronts: crate::storefront::Storefronts,
     state: Arc<Mutex<MenuState>>,
     events: mpsc::UnboundedSender<MenuEvent>,
     presented: watch::Sender<u64>,
@@ -119,6 +124,7 @@ impl MenuController {
         (
             Self {
                 compositor: crate::sway::SwayController::from_environment(),
+                storefronts: crate::storefront::Storefronts::default(),
                 state: Arc::new(Mutex::new(MenuState::default())),
                 events,
                 presented,
@@ -145,6 +151,7 @@ impl MenuController {
             let target = match previous {
                 Foreground::Library => ReturnTarget::Library,
                 Foreground::Game => ReturnTarget::Game,
+                Foreground::Storefront => ReturnTarget::Storefront,
                 Foreground::Menu | Foreground::Transfer => unreachable!(),
             };
             state.foreground = Foreground::Menu;
@@ -175,6 +182,7 @@ impl MenuController {
 
             let target = match state.return_target {
                 Some(ReturnTarget::Game) if game_active => Foreground::Game,
+                Some(ReturnTarget::Storefront) if self.storefronts.active().is_some() => Foreground::Storefront,
                 _ => Foreground::Library,
             };
             state.foreground = target;
@@ -186,6 +194,14 @@ impl MenuController {
 
         let _ = self.events.send(event);
         true
+    }
+
+    pub fn storefront_foreground(&self, active: bool) {
+        let mut state = self.lock();
+        state.foreground = if active { Foreground::Storefront } else { Foreground::Library };
+        state.return_target = None;
+        state.reason = if active { "storefront" } else { "home" }.into();
+        let _ = self.events.send(MenuEvent::ContextChanged(state.generation));
     }
 
     pub fn game_started(&self) {
@@ -292,7 +308,7 @@ impl MenuController {
             actions.push("resume".to_string());
             if state.return_target == Some(ReturnTarget::Game) {
                 actions.push("exit-game".to_string());
-            } else {
+            } else if state.return_target == Some(ReturnTarget::Library) {
                 actions.push("transfer".to_string());
             }
             actions.push("reboot".to_string());
@@ -335,6 +351,7 @@ impl MenuController {
             state.foreground == Foreground::Library
         } else {
             state.foreground == Foreground::Menu && state.generation == origin
+                && state.return_target == Some(ReturnTarget::Library)
         };
         if !valid { return Err("stale or unavailable library menu context".into()); }
         state.transfer_generation = state.transfer_generation.wrapping_add(1).max(1);
@@ -446,6 +463,18 @@ mod tests {
         assert_eq!(menu.snapshot().return_target, None);
     }
 
+    #[test]
+    fn storefront_menu_restores_storefront_without_allowing_transfer() {
+        let (menu, _) = MenuController::new();
+        menu.storefronts.reserve("dukkan", false).unwrap();
+        menu.storefront_foreground(true);
+        menu.open("guide");
+        assert_eq!(menu.snapshot().return_target, Some(ReturnTarget::Storefront));
+        assert!(!menu.context().6.contains(&"transfer".into()));
+        assert!(menu.reserve_transfer(menu.context().1, false).is_err());
+        assert!(menu.close("resume", false));
+        assert_eq!(menu.snapshot().foreground, Foreground::Storefront);
+    }
     #[test]
     fn game_menu_game() {
         let (menu, _) = MenuController::new();

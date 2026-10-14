@@ -1,5 +1,13 @@
 # Changelog
 
+## Sprint 1 storefront source candidate (2026-10-12)
+
+Managed Dukkan/Steam clients, isolated workspaces, contextual resident-menu
+contract and opt-in Steam Guide delegation. Based on today’s published snapshot.
+Python/JavaScript checks passed; Rust/Qt build and device acceptance are pending.
+See `docs/sprint1-storefronts.md`.
+
+
 The repository's first push after 0.6.5 includes both 0.6.6 and 0.6.7.
 
 ## Unreleased configuration — planned 0.7.0 validation

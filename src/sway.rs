@@ -25,9 +25,13 @@ struct Node {
     #[serde(default)] focused: bool,
     #[serde(default)] fullscreen_mode: u8,
     #[serde(default)] border: String,
+    #[serde(default)] window_properties: Option<WindowProperties>,
     #[serde(default)] nodes: Vec<Node>,
     #[serde(default)] floating_nodes: Vec<Node>,
 }
+
+#[derive(Debug, Default, Deserialize)]
+struct WindowProperties { #[serde(default)] class: Option<String> }
 
 #[derive(Clone, Debug)]
 struct View {
@@ -39,6 +43,7 @@ struct View {
     fullscreen: Option<(u64, u8)>,
     floating: bool,
     border: String,
+    steam_game: bool,
 }
 
 impl Node {
@@ -59,7 +64,7 @@ impl Node {
             if node.pid.is_some() || node.app_id.is_some() {
                 out.push(View { id: node.id, pid: node.pid, app_id: node.app_id.clone(),
                     workspace: workspace.into(), focused: node.focused, fullscreen,
-                    floating, border: node.border.clone() });
+                    floating, border: node.border.clone(), steam_game: node.window_properties.as_ref().and_then(|p| p.class.as_deref()).is_some_and(steam_game_class) });
             }
             for child in &node.nodes {
                 walk(child, workspace, fullscreen, floating, out);
@@ -78,6 +83,7 @@ trait Backend: Send + Sync + Debug {
     fn tree(&self) -> Result<Node>;
     fn command(&self, command: &str) -> Result<()>;
     fn owns_pid(&self, pid: u32, cgroup: &str) -> bool;
+    fn steam_game_pid(&self, _pid: u32) -> bool { false }
 }
 
 #[derive(Debug)]
@@ -116,10 +122,24 @@ impl Backend for Native {
         }
         Ok(())
     }
+    fn steam_game_pid(&self, pid: u32) -> bool {
+        std::fs::read(format!("/proc/{pid}/environ")).map(|env| steam_game_environment(&env)).unwrap_or(false)
+    }
     fn owns_pid(&self, pid: u32, cgroup: &str) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
             .map(|text| in_cgroup(&text, cgroup)).unwrap_or(false)
     }
+}
+
+fn steam_game_environment(env: &[u8]) -> bool {
+    env.split(|b| *b == 0).any(|field| field.strip_prefix(b"SteamAppId=")
+        .and_then(|id| std::str::from_utf8(id).ok())
+        .and_then(|id| id.parse::<u64>().ok()).is_some_and(|id| id != 0))
+}
+
+fn steam_game_class(class: &str) -> bool {
+    class.strip_prefix("steam_app_").is_some_and(|id|
+        !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) && id.parse::<u64>().is_ok_and(|id| id != 0))
 }
 
 fn in_cgroup(text: &str, expected: &str) -> bool {
@@ -152,6 +172,9 @@ struct TrackedGame { cgroup: String, primary: Option<u64> }
 struct State {
     backend: Option<Arc<dyn Backend>>,
     game: Option<TrackedGame>,
+    stores: BTreeMap<String, TrackedGame>,
+    active_store: Option<String>,
+    restore_store_focus: bool,
     lease: Option<Lease>,
     restore_library: bool,
 }
@@ -207,6 +230,78 @@ impl State {
         if view.fullscreen.is_some() { self.command(owner, "fullscreen disable")?; }
         Ok(())
     }
+    fn store_owns(&self, id: &str, view: &View) -> bool {
+        match (&self.backend, self.stores.get(id), view.pid) {
+            (Some(b), Some(g), Some(pid)) => b.owns_pid(pid, &g.cgroup),
+            _ => false,
+        }
+    }
+    fn store_game(&self, id: &str, view: &View) -> bool {
+        id == "steam" && (view.steam_game || view.pid.is_some_and(|pid|
+            self.backend.as_ref().is_some_and(|b| b.steam_game_pid(pid))))
+    }
+    fn route_stores(&mut self) -> Result<()> {
+        for id in self.stores.keys().cloned().collect::<Vec<_>>() {
+            let views: Vec<_> = self.views()?.into_iter().filter(|v| self.store_owns(&id, v)).collect();
+            let previous = self.stores[&id].primary;
+            // Prefer the game's window over the Steam client while it is mapped.
+            let primary = views.iter().filter(|v| self.store_game(&id, v)).find(|v| v.focused)
+                .or_else(|| views.iter().find(|v| self.store_game(&id, v)))
+                .or_else(|| views.iter().find(|v| v.focused && (!v.floating || v.fullscreen.is_some())))
+                .or_else(|| views.iter().find(|v| Some(v.id) == previous))
+                .or_else(|| views.iter().find(|v| v.fullscreen.is_some()))
+                .or_else(|| views.first());
+            let workspace = format!("store-{id}");
+            for view in &views {
+                if view.workspace != workspace {
+                    self.command(view.id, &format!("move container to workspace \"{workspace}\""))?;
+                }
+            }
+            if let Some(view) = primary {
+                // The layer-shell menu does not require removing fullscreen.
+                // Repair fullscreen after client/window changes and Guide cycles.
+                if previous != Some(view.id) || view.floating || view.border != "none" {
+                    self.command(view.id, "floating disable, border none")?;
+                }
+                // Steam and its games own their fullscreen requests. Big Picture
+                // can fill its dedicated workspace as a tiled window, matching
+                // the validated Pegasus launch path without an extra transition.
+                if id != "steam" && view.fullscreen.is_none() {
+                    self.command(view.id, "fullscreen enable")?;
+                }
+                if self.active_store.as_deref() == Some(id.as_str()) && self.game.is_none() && self.lease.is_none()
+                    && (previous != Some(view.id) || self.restore_store_focus) {
+                    self.command(view.id, "focus")?;
+                    self.restore_store_focus = false;
+                }
+                self.stores.get_mut(&id).unwrap().primary = Some(view.id);
+            }
+        }
+        Ok(())
+    }
+    fn activate_store(&mut self, id: Option<String>) -> Result<()> {
+        if let Some(id) = &id {
+            crate::storefront::unit(id)?;
+            if id == "steam" {
+                if let Some(backend) = &self.backend {
+                    // Choose the destination before a client is executed or focused.
+                    // A later move can leave Pegasus sharing the launch workspace
+                    // during initial mapping.
+                    backend.command(&format!("workspace --no-auto-back-and-forth \"store-{id}\""))?;
+                }
+            }
+        }
+        self.active_store = id.clone();
+        self.restore_store_focus = id.is_some();
+        self.route_stores()?;
+        if id.is_none() {
+            self.restore_library = true;
+            self.focus_library()?;
+            self.restore_library = false;
+        }
+        Ok(())
+    }
+
     fn route_game(&mut self) -> Result<()> {
         if self.game.is_none() { return Ok(()) }
         let views: Vec<View> = self.views()?.into_iter().filter(|v| self.owns(v)).collect();
@@ -342,6 +437,7 @@ impl State {
         if !menu_open && self.lease.is_some() { self.finish_menu(game_active)?; }
         self.place_library()?;
         self.route_game()?;
+        self.route_stores()?;
         if menu_open && self.lease.is_some() { self.keep_menu_focused()?; }
         Ok(())
     }
@@ -354,7 +450,7 @@ impl SwayController {
         let backend = std::env::var_os("SWAYSOCK").filter(|s| !s.is_empty())
             .map(|socket| Arc::new(Native { socket: socket.into() }) as Arc<dyn Backend>);
         Self { enabled: backend.is_some(), state: Arc::new(Mutex::new(State {
-            backend, game: None, lease: None, restore_library: false })) }
+            backend, game: None, stores: BTreeMap::new(), active_store: None, restore_store_focus: false, lease: None, restore_library: false })) }
     }
     pub fn enabled(&self) -> bool { self.enabled }
     async fn run(&self, operation: impl FnOnce(&mut State) -> Result<()> + Send + 'static) -> Result<()> {
@@ -362,6 +458,34 @@ impl SwayController {
         let state = self.state.clone();
         tokio::task::spawn_blocking(move || {
             operation(&mut state.lock().unwrap_or_else(|e| e.into_inner()))
+        }).await?
+    }
+    pub async fn storefront_started(&self, id: String, cgroup: String) -> Result<()> {
+        self.run(move |s| {
+            crate::storefront::unit(&id)?;
+            if !cgroup.starts_with('/') || cgroup == "/" || cgroup.ends_with('/') {
+                return Err(message("invalid storefront control group"));
+            }
+            s.stores.insert(id, TrackedGame { cgroup, primary: None });
+            Ok(())
+        }).await
+    }
+    pub async fn activate_storefront(&self, id: Option<String>) -> Result<()> {
+        self.run(move |s| s.activate_store(id)).await
+    }
+    pub async fn storefront_ended(&self, id: String) -> Result<()> {
+        self.run(move |s| {
+            s.stores.remove(&id);
+            if s.active_store.as_deref() == Some(id.as_str()) { s.activate_store(None)?; }
+            Ok(())
+        }).await
+    }
+    pub async fn steam_game_running(&self) -> Result<bool> {
+        if !self.enabled { return Ok(false); }
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || {
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(s.views()?.iter().any(|v| s.store_owns("steam", v) && s.store_game("steam", v)))
         }).await?
     }
     pub async fn game_started(&self, cgroup: String) -> Result<()> {
@@ -412,8 +536,125 @@ mod tests {
         ]})), commands: Mutex::new(vec![]), fail: AtomicBool::new(false) });
         let state = State { backend: Some(fake.clone()),
             game: Some(TrackedGame { cgroup: "/game".into(), primary: Some(20) }), lease: None,
-            restore_library: false };
+            restore_library: false, stores: BTreeMap::new(), active_store: None, restore_store_focus: false };
         (state, fake)
+    }
+    #[test]
+    fn steam_game_identity_excludes_client_and_malformed_classes() {
+        assert!(steam_game_class("steam_app_1234"));
+        for class in ["Steam", "steamwebhelper", "steam_app_0", "steam_app_bad", "steam_app_", "steam_app_123;kill"] {
+            assert!(!steam_game_class(class));
+        }
+        assert!(steam_game_environment(b"PATH=/bin\0SteamAppId=1234\0"));
+        assert!(!steam_game_environment(b"SteamAppId=0\0"));
+        assert!(!steam_game_environment(b"OtherSteamAppId=1234\0"));
+    }
+    #[test]
+    fn store_windows_move_out_of_library_and_repair_fullscreen() {
+        let (mut state, fake) = fixture(0);
+        state.game = None;
+        state.stores.insert("dukkan".into(), TrackedGame { cgroup: "/store".into(), primary: None });
+        state.activate_store(Some("dukkan".into())).unwrap();
+        let commands = fake.commands.lock().unwrap();
+        assert!(commands.iter().any(|c| c == "[con_id=20] move container to workspace \"store-dukkan\""));
+        assert!(commands.iter().any(|c| c == "[con_id=20] fullscreen enable"));
+        assert!(!commands.iter().any(|c| c == "[con_id=10] fullscreen enable"));
+    }
+    #[test]
+    fn steam_workspace_is_selected_even_before_a_client_maps() {
+        let (mut state, fake) = fixture(0);
+        state.game = None;
+        state.activate_store(Some("steam".into())).unwrap();
+        assert_eq!(fake.commands.lock().unwrap().as_slice(),
+            &["workspace --no-auto-back-and-forth \"store-steam\"".to_string()]);
+        assert_eq!(state.active_store.as_deref(), Some("steam"));
+    }
+    #[test]
+    fn failed_workspace_selection_preserves_previous_store_activation() {
+        let (mut state, fake) = fixture(0);
+        state.game = None;
+        state.active_store = Some("dukkan".into());
+        fake.fail.store(true, Ordering::SeqCst);
+        assert!(state.activate_store(Some("steam".into())).is_err());
+        assert_eq!(state.active_store.as_deref(), Some("dukkan"));
+        assert!(!state.restore_store_focus);
+    }
+    #[test]
+    fn steam_client_stays_tiled_when_routed_out_of_library() {
+        let (mut state, fake) = fixture(0);
+        state.game = None;
+        state.stores.insert("steam".into(), TrackedGame { cgroup: "/store".into(), primary: None });
+        state.activate_store(Some("steam".into())).unwrap();
+        let commands = fake.commands.lock().unwrap();
+        assert_eq!(commands.first().map(String::as_str),
+            Some("workspace --no-auto-back-and-forth \"store-steam\""));
+        assert!(commands.contains(&"[con_id=20] move container to workspace \"store-steam\"".into()));
+        assert!(commands.contains(&"[con_id=20] focus".into()));
+        assert!(!commands.iter().any(|c| c.contains("fullscreen")));
+    }
+    #[test]
+    fn steam_game_fullscreen_is_preserved_and_client_restored_after_exit() {
+        let (mut state, fake) = fixture(1);
+        state.game = None;
+        state.stores.insert("steam".into(), TrackedGame { cgroup: "/store".into(), primary: None });
+        {
+            let mut tree = fake.tree.lock().unwrap();
+            tree["nodes"][1]["name"] = json!("store-steam");
+            tree["nodes"][1]["nodes"][0]["window_properties"] = json!({"class":"steam_app_123"});
+            tree["nodes"][1]["nodes"].as_array_mut().unwrap().push(json!({
+                "type":"con", "id":21, "pid":201, "focused":false,
+                "border":"none", "fullscreen_mode":0,
+                "window_properties":{"class":"steam"}
+            }));
+        }
+        state.activate_store(Some("steam".into())).unwrap();
+        assert_eq!(state.stores["steam"].primary, Some(20));
+        assert!(!fake.commands.lock().unwrap().iter().any(|c| c.contains("fullscreen")));
+        {
+            let mut tree = fake.tree.lock().unwrap();
+            tree["nodes"][1]["nodes"].as_array_mut().unwrap().remove(0);
+            tree["nodes"][1]["nodes"][0]["focused"] = json!(true);
+        }
+        fake.commands.lock().unwrap().clear();
+        state.route_stores().unwrap();
+        assert_eq!(state.stores["steam"].primary, Some(21));
+        let commands = fake.commands.lock().unwrap();
+        assert!(commands.contains(&"[con_id=21] focus".into()));
+        assert!(!commands.iter().any(|c| c.contains("fullscreen")));
+    }
+    #[test]
+    fn newly_focused_client_replaces_splash_but_floating_popup_does_not() {
+        for floating in [false, true] {
+            let (mut state, fake) = fixture(0);
+            state.game = None;
+            state.stores.insert("dukkan".into(), TrackedGame { cgroup: "/store".into(), primary: Some(20) });
+            let mut tree = fake.tree.lock().unwrap();
+            tree["nodes"][1]["nodes"][0]["focused"] = json!(false);
+            let key = if floating { "floating_nodes" } else { "nodes" };
+            tree["nodes"][1][key].as_array_mut().unwrap().push(json!({"id":21,"pid":201,"focused":true,"border":"none"}));
+            drop(tree);
+            state.route_stores().unwrap();
+            assert_eq!(state.stores["dukkan"].primary, Some(if floating { 20 } else { 21 }));
+        }
+    }
+    #[test]
+    fn failed_store_focus_is_retried_until_a_window_is_focused() {
+        let (mut state, fake) = fixture(0);
+        state.game = None;
+        state.stores.insert("dukkan".into(), TrackedGame { cgroup: "/store".into(), primary: Some(20) });
+        state.active_store = Some("dukkan".into());
+        state.restore_store_focus = true;
+        fake.fail.store(true, Ordering::SeqCst);
+        assert!(state.route_stores().is_err());
+        assert!(state.restore_store_focus);
+        state.route_stores().unwrap();
+        assert!(!state.restore_store_focus);
+        assert!(fake.commands.lock().unwrap().iter().any(|c| c == "[con_id=20] focus"));
+    }
+    #[test]
+    fn native_window_properties_can_be_null() {
+        let node: Node = serde_json::from_str(r#"{"id":1,"pid":100,"window_properties":null}"#).unwrap();
+        assert!(!node.views()[0].steam_game);
     }
     #[test]
     fn descendants_match_but_similarly_named_or_unrelated_groups_do_not() {
@@ -587,7 +828,7 @@ mod tests {
     }
     #[test]
     fn no_sway_backend_leaves_legacy_sessions_supported() {
-        let mut state = State { backend: None, game: None, lease: None, restore_library: false };
+        let mut state = State { backend: None, game: None, stores: BTreeMap::new(), active_store: None, restore_store_focus: false, lease: None, restore_library: false };
         state.prepare_menu(true).unwrap();
         state.focus_menu().unwrap();
         state.finish_menu(true).unwrap();

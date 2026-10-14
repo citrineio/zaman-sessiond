@@ -22,6 +22,19 @@
       <arg name="token" type="t" direction="in"/>
       <arg name="state_json" type="s" direction="out"/>
     </method>
+    <method name="StorefrontStatus">
+      <arg name="id" type="s" direction="out"/>
+      <arg name="generation" type="t" direction="out"/>
+      <arg name="phase" type="s" direction="out"/>
+      <arg name="guide_owner" type="s" direction="out"/>
+      <arg name="game_running" type="b" direction="out"/>
+      <arg name="error" type="s" direction="out"/>
+    </method>
+    <method name="StorefrontAction">
+      <arg name="action" type="s" direction="in"/>
+      <arg name="id" type="s" direction="in"/>
+      <arg name="generation" type="s" direction="in"/>
+    </method>
     <method name="Launch">
       <arg name="system_id" type="s" direction="in"/>
       <arg name="rom_path" type="s" direction="in"/>
