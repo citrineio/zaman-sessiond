@@ -31,6 +31,8 @@ pub enum ApiCommand {
     StartTransfer { menu_generation: u64, reply: oneshot::Sender<std::result::Result<u64, String>> },
     Storefront { action: String, id: String, generation: u64,
         reply: oneshot::Sender<std::result::Result<(), String>> },
+    InstalledLaunch { app: String, reply: oneshot::Sender<std::result::Result<(), String>> },
+    InstalledClose { generation: u64, reply: oneshot::Sender<std::result::Result<(), String>> },
     Launch(ResolvedLaunch),
     Stop,
     Menu {
@@ -330,9 +332,30 @@ impl SessionApi {
             .map_err(fdo::Error::Failed)
     }
 
+    #[zbus(out_args("generation", "app", "name", "phase", "error", "ready"))]
+    fn installed_game_status(&self) -> (String, String, String, String, String, bool) {
+        self.menu.installed.context()
+    }
+
+    async fn installed_game_launch(&self, app: &str) -> fdo::Result<()> {
+        crate::installed::name(app).map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        let (reply, response) = oneshot::channel();
+        self.send_command(ApiCommand::InstalledLaunch { app: app.into(), reply }).await?;
+        response.await.map_err(|_| fdo::Error::Failed("installed game worker stopped".into()))?
+            .map_err(fdo::Error::Failed)
+    }
+
+    async fn installed_game_close(&self, generation: &str) -> fdo::Result<()> {
+        let generation = parse_transfer_generation(generation)?;
+        let (reply, response) = oneshot::channel();
+        self.send_command(ApiCommand::InstalledClose { generation, reply }).await?;
+        response.await.map_err(|_| fdo::Error::Failed("installed game worker stopped".into()))?
+            .map_err(fdo::Error::Failed)
+    }
+
     async fn launch(&self, system_id: &str, rom_path: &str) -> fdo::Result<()> {
         self.require_transfer_idle()?;
-        if self.menu.storefronts.active().is_some() || self.menu.storefronts.has_game() {
+        if self.menu.storefronts.active().is_some() || self.menu.storefronts.has_game() || self.menu.installed.busy() {
             return Err(fdo::Error::Failed("return to library and close any storefront game before launching".into()));
         }
         if self.menu.snapshot().open {
@@ -383,7 +406,7 @@ impl SessionApi {
         // ExitGame is a session action shared by the fallback menu, Quickshell
         // and CLI. Modern overlays do not set the fallback menu's open flag.
         // Keep shutdown under the existing worker and its graceful stop policy.
-        self.status.mark_stopping();
+        if !self.menu.installed.busy() { self.status.mark_stopping(); }
         self.send_command(ApiCommand::ExitGame).await
     }
 

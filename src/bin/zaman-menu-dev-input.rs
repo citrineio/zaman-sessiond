@@ -487,7 +487,7 @@ async fn next_input(monitor: &mut Option<ControllerMonitor>) -> Option<Result<Sy
 }
 
 fn menu_event(event: &str) -> bool {
-    matches!(event, "ui_up"|"ui_down"|"ui_left"|"ui_right"|"ui_accept"|"ui_cancel"|"ui_back")
+    matches!(event, "ui_up"|"ui_down"|"ui_left"|"ui_right"|"ui_accept"|"ui_cancel"|"ui_back"|"ui_context"|"ui_action")
 }
 
 fn usable_press(event: &str, value: f64, presented: bool) -> bool {
@@ -969,6 +969,8 @@ mod tests {
     fn recovery_requires_a_presented_menu_and_a_usable_press() {
         assert!(usable_press("ui_down", 1.0, true));
         assert!(usable_press("ui_accept", 1.0, true));
+        assert!(usable_press("ui_context", 1.0, true));
+        assert!(usable_press("ui_action", 1.0, true));
         assert!(!usable_press("ui_down", 1.0, false));
         assert!(!usable_press("ui_down", 0.0, true));
         assert!(!usable_press("ui_down", 0.5, true));

@@ -4,6 +4,7 @@ mod daemon;
 mod error;
 mod guide;
 mod inputplumber;
+mod installed;
 mod menu;
 mod operations;
 mod quickshell_menu;

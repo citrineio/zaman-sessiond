@@ -31,6 +31,37 @@ async fn main() -> Result<()> {
             let context: (String, u64, String, String, bool, String) = proxy.call("StorefrontStatus", &()).await?;
             println!("id={} generation={} phase={} guide={} game={} error={}", context.0, context.1, context.2, context.3, context.4, context.5);
         }
+        [command, action, app] if command == "installed-game" && action == "launch" => {
+            let _: () = proxy.call("InstalledGameLaunch", &(app,)).await?;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(22);
+            loop {
+                let state: (String, String, String, String, String, bool) = proxy.call("InstalledGameStatus", &()).await?;
+                if state.1 != app.as_str() {
+                    return Err(io::Error::new(io::ErrorKind::Other, "installed game session changed during launch").into());
+                }
+                match state.3.as_str() {
+                    "Running" if state.5 => { println!("Installed game ready: {app}"); break; }
+                    "Failed" | "CleanupFailed" | "Exited" => {
+                        let error = if state.4.is_empty() {
+                            "installed game exited during startup".to_string()
+                        } else { state.4 };
+                        return Err(io::Error::new(io::ErrorKind::Other, error).into());
+                    }
+                    _ if tokio::time::Instant::now() >= deadline => {
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "installed game readiness timed out; check status before retrying").into());
+                    }
+                    _ => sleep(Duration::from_millis(100)).await,
+                }
+            }
+        }
+        [command, action] if command == "installed-game" && action == "status" => {
+            let state: (String, String, String, String, String, bool) = proxy.call("InstalledGameStatus", &()).await?;
+            println!("generation={} app={} name={} phase={} error={} ready={}", state.0, state.1, state.2, state.3, state.4, state.5);
+        }
+        [command, action] if command == "installed-game" && action == "close" => {
+            let state: (String, String, String, String, String, bool) = proxy.call("InstalledGameStatus", &()).await?;
+            let _: () = proxy.call("InstalledGameClose", &(state.0,)).await?;
+        }
         [command] if command == "status" => {
             print_status(&read_status(&proxy).await?);
             print_foreground_status(&read_foreground_status(&proxy).await?);
@@ -75,7 +106,7 @@ async fn main() -> Result<()> {
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: zamanctl storefront launch {dukkan|steam} | storefront {home|close} | storefront-status | status | menu {open|close|toggle} | menu-status | version | transfer | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
+                "usage: zamanctl installed-game {launch APP|status|close} | storefront launch {dukkan|steam} | storefront {home|close} | storefront-status | status | menu {open|close|toggle} | menu-status | version | transfer | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
             )
             .into())
         }

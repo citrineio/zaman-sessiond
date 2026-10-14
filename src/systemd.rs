@@ -87,8 +87,13 @@ impl UserSystemd {
         self.stop(&GameHandle { unit: crate::storefront::unit(id)?.into() }).await
     }
 
+    pub async fn stop_installed_game(&self) -> Result<()> {
+        self.stop(&GameHandle { unit: crate::installed::UNIT.into() }).await
+    }
+
     pub async fn launch_named(&self, command: &CommandSpec, unit: &str, storefront: bool) -> Result<GameHandle> {
         let manager = self.manager().await?;
+        let installed = unit == crate::installed::UNIT;
 
         let loaded: zbus::Result<OwnedObjectPath> = manager.call("GetUnit", &(unit,)).await;
         if unit_exists(loaded)? {
@@ -106,8 +111,8 @@ impl UserSystemd {
             ("ExitType", Value::new(if storefront { "cgroup" } else { "main" })),
             ("ExecStart", Value::new(exec_start)),
             ("KillMode", Value::new("control-group")),
-            ("KillSignal", Value::new(if storefront { 15_i32 } else { 2_i32 })), // SIGINT: Mesen graceful shutdown
-            ("TimeoutStopUSec", Value::new(if storefront { 8_000_000_u64 } else { 3_000_000_u64 })),
+            ("KillSignal", Value::new(if storefront || installed { 15_i32 } else { 2_i32 })), // SIGINT: Mesen graceful shutdown
+            ("TimeoutStopUSec", Value::new(if installed { 15_000_000_u64 } else if storefront { 8_000_000_u64 } else { 3_000_000_u64 })),
             ("SendSIGKILL", Value::new(true)),
             ("CollectMode", Value::new("inactive-or-failed")),
         ];

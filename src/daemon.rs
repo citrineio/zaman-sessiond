@@ -204,6 +204,7 @@ async fn finish_shutdown(
 pub async fn recover_runtime() -> Result<()> {
     let systemd = UserSystemd::connect().await?;
     systemd.stop_transfer().await?;
+    crate::installed::recover_startup(&systemd).await?;
     for id in ["dukkan", "steam"] { systemd.stop_storefront(id).await?; }
     if systemd.recover_orphaned_game().await? {
         println!("Stopped orphaned zaman-game.service during recovery; returning to library.");
@@ -251,6 +252,8 @@ pub async fn run_worker(
     input_recovery.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut sessions: JoinSet<Result<SessionOutcome>> = JoinSet::new();
     let mut storefront_tasks = JoinSet::new();
+    let mut installed_tasks = JoinSet::new();
+    let mut installed_control: Option<mpsc::Sender<SessionControl>> = None;
     let mut storefront_controls = std::collections::BTreeMap::<String, mpsc::Sender<()>>::new();
     let mut transfers = JoinSet::new();
     let mut transfer_stop: Option<watch::Sender<bool>> = None;
@@ -294,7 +297,8 @@ pub async fn run_worker(
                 // Recheck in the worker: commands may have queued before the
                 // transfer reservation became visible to D-Bus callers.
                 if menu.transfer_busy() && matches!(&command,
-                    Some(ApiCommand::Launch(_)) | Some(ApiCommand::Stop) |
+                    Some(ApiCommand::Launch(_)) | Some(ApiCommand::InstalledLaunch { .. }) |
+                    Some(ApiCommand::InstalledClose { .. }) | Some(ApiCommand::Stop) |
                     Some(ApiCommand::ExitGame) | Some(ApiCommand::Reboot) | Some(ApiCommand::Shutdown)) {
                     status.fail("busy: close Transfer Games first");
                     continue;
@@ -304,7 +308,7 @@ pub async fn run_worker(
                     Some(ApiCommand::Storefront { action, id, generation, reply }) => {
                         let result = async {
                             if !menu.compositor.enabled() { return Err(message("managed storefronts require the graphical Sway environment")); }
-                            if slot.is_busy() || active_control.is_some()
+                            if slot.is_busy() || active_control.is_some() || installed_control.is_some() || menu.installed.busy()
                                 || matches!(status.snapshot().state.as_str(), "Active" | "Stopping") {
                                 return Err(message("busy: a game or session operation is in flight"));
                             }
@@ -351,8 +355,69 @@ pub async fn run_worker(
                         guide_buttons.clear();
                         let _ = reply.send(result);
                     }
+                    Some(ApiCommand::InstalledLaunch { app, reply }) => {
+                        let result = async {
+                            crate::installed::name(&app)?;
+                            if !menu.compositor.enabled() {
+                                return Err(message("installed games require the graphical Sway environment"));
+                            }
+                            if slot.is_busy() || active_control.is_some() || installed_control.is_some()
+                                || menu.installed.busy() || menu.storefronts.has_game()
+                                || matches!(status.snapshot().state.as_str(), "Active" | "Stopping") {
+                                return Err(message("busy: another game or session operation is in flight"));
+                            }
+                            if menu.compositor.steam_game_running().await? {
+                                return Err(message("close the Steam game before starting an installed game"));
+                            }
+                            if menu.storefronts.active().as_deref().is_some_and(|id| id != "dukkan") {
+                                return Err(message("close the active storefront before playing an installed game"));
+                            }
+                            if menu.snapshot().open || crate::quickshell_menu::status().await?.input_owned {
+                                return Err(message("close the Guide menu before starting a game"));
+                            }
+                            let entry = menu.installed.reserve(&app)?;
+                            let from_dukkan = menu.storefronts.active().as_deref() == Some("dukkan");
+                            if from_dukkan {
+                                menu.storefronts.home();
+                                menu.storefront_foreground(false);
+                                if let Err(error) = menu.compositor.activate_storefront(None).await {
+                                    menu.installed.update(entry.generation, "Failed", error.to_string(), false);
+                                    return Err(error);
+                                }
+                            }
+                            menu.game_started();
+                            let (control, controls) = mpsc::channel(8);
+                            installed_control = Some(control);
+                            installed_tasks.spawn(crate::installed::run(entry, menu.installed.clone(),
+                                menu.compositor.clone(), controls));
+                            request_input_discovery(&mut discoveries, &system_input.input);
+                            Ok(())
+                        }.await.map_err(|error| error.to_string());
+                        let _ = reply.send(result);
+                    }
+                    Some(ApiCommand::InstalledClose { generation, reply }) => {
+                        let result = async {
+                            let entry = menu.installed.snapshot().ok_or_else(|| message("no installed game session"))?;
+                            if entry.generation != generation {
+                                return Err(message("stale installed game generation"));
+                            }
+                            if entry.phase == "CleanupFailed" {
+                                crate::installed::retry_cleanup().await?;
+                                menu.installed.update(generation, "Exited", String::new(), false);
+                                return Ok(());
+                            }
+                            if !matches!(entry.phase.as_str(), "Starting" | "Running") {
+                                return Err(message("installed game is not running"));
+                            }
+                            installed_control.as_ref().ok_or_else(|| message("installed game supervisor unavailable"))?
+                                .send(SessionControl::Stop).await.map_err(|_| message("installed game supervisor stopped"))?;
+                            menu.installed.update(generation, "Stopping", String::new(), false);
+                            Ok(())
+                        }.await.map_err(|error| error.to_string());
+                        let _ = reply.send(result);
+                    }
                     Some(ApiCommand::StartTransfer { menu_generation, reply }) => {
-                        let reserved = if slot.is_busy() || active_control.is_some()
+                        let reserved = if slot.is_busy() || active_control.is_some() || installed_control.is_some() || menu.installed.busy()
                             || matches!(status.snapshot().state.as_str(), "Active" | "Stopping") {
                             Err("busy: a game or session operation is in flight".into())
                         } else { menu.reserve_transfer(menu_generation, false) };
@@ -372,7 +437,7 @@ pub async fn run_worker(
                         }
                     }
                     Some(ApiCommand::Launch(launch)) => {
-                        if active_control.is_some() || menu.storefronts.active().is_some() || menu.storefronts.has_game() {
+                        if active_control.is_some() || installed_control.is_some() || menu.installed.busy() || menu.storefronts.active().is_some() || menu.storefronts.has_game() {
                             status.fail("worker received a launch while a game or storefront owns the foreground");
                             continue;
                         }
@@ -410,6 +475,21 @@ pub async fn run_worker(
                             status.mark_stopping();
                             let _ = control.send(SessionControl::Stop).await;
                         }
+                        if let Some(control) = &installed_control {
+                            if let Some(entry) = menu.installed.snapshot() {
+                                menu.installed.update(entry.generation, "Stopping", String::new(), false);
+                            }
+                            let _ = control.send(SessionControl::Stop).await;
+                        } else if menu.installed.snapshot().is_some_and(|e| e.phase == "CleanupFailed") {
+                            match crate::installed::retry_cleanup().await {
+                                Ok(()) => {
+                                    if let Some(entry) = menu.installed.snapshot() {
+                                        menu.installed.update(entry.generation, "Exited", String::new(), false);
+                                    }
+                                }
+                                Err(error) => eprintln!("Installed game cleanup retry failed: {error}"),
+                            }
+                        }
                         let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::Menu { action, reason, reply }) => {
@@ -435,7 +515,7 @@ pub async fn run_worker(
                             reason,
                             &menu,
                             &system_input,
-                            active_control.is_some(),
+                            active_control.is_some() || installed_control.is_some(),
                         )
                         .await
                         .map_err(|error| error.to_string());
@@ -452,10 +532,10 @@ pub async fn run_worker(
                             eprintln!("menu process exited unexpectedly");
                             eprintln!(
                                 "restoring {}",
-                                if active_control.is_some() { "game" } else { "library" }
+                                if active_control.is_some() || installed_control.is_some() { "game" } else { "library" }
                             );
                             if let Err(error) = close_menu(&menu, &system_input,
-                                active_control.is_some(), "menu-process-exited").await {
+                                active_control.is_some() || installed_control.is_some(), "menu-process-exited").await {
                                 eprintln!("Failed to restore foreground after menu exit: {error}");
                             }
                         }
@@ -473,8 +553,23 @@ pub async fn run_worker(
                         if let Some(control) = &active_control {
                             status.mark_stopping();
                             let _ = control.send(SessionControl::ExitGame).await;
-                            let _ = slot.complete(token, identity);
                         }
+                        if let Some(control) = &installed_control {
+                            if let Some(entry) = menu.installed.snapshot() {
+                                menu.installed.update(entry.generation, "Stopping", String::new(), false);
+                            }
+                            let _ = control.send(SessionControl::ExitGame).await;
+                        } else if menu.installed.snapshot().is_some_and(|e| e.phase == "CleanupFailed") {
+                            match crate::installed::retry_cleanup().await {
+                                Ok(()) => {
+                                    if let Some(entry) = menu.installed.snapshot() {
+                                        menu.installed.update(entry.generation, "Exited", String::new(), false);
+                                    }
+                                }
+                                Err(error) => eprintln!("Installed game cleanup retry failed: {error}"),
+                            }
+                        }
+                        let _ = slot.complete(token, identity);
                     }
                     Some(ApiCommand::Reboot) => {
                         let (token, identity) = match begin_or_reject(
@@ -487,8 +582,8 @@ pub async fn run_worker(
                             }
                         };
                         let _ = close_menu(&menu, &system_input, false, "reboot").await;
-                        match &active_control {
-                            Some(control) => {
+                        match (&active_control, &installed_control) {
+                            (Some(control), _) => {
                                 status.mark_stopping();
                                 if let Err(error) = control.send(SessionControl::Reboot).await {
                                     let error = format!("reboot control send failed: {error}");
@@ -496,7 +591,25 @@ pub async fn run_worker(
                                     status.fail(error);
                                 }
                             }
-                            None => request_system_power(&status, "Reboot").await,
+                            (None, Some(control)) => {
+                                if let Some(entry) = menu.installed.snapshot() {
+                                    menu.installed.update(entry.generation, "Stopping", String::new(), false);
+                                }
+                                let _ = control.send(SessionControl::Reboot).await;
+                            }
+                            (None, None) => {
+                                if menu.installed.busy() {
+                                    match crate::installed::retry_cleanup().await {
+                                        Ok(()) => {
+                                            if let Some(entry) = menu.installed.snapshot() {
+                                                menu.installed.update(entry.generation, "Exited", String::new(), false);
+                                            }
+                                            request_system_power(&status, "Reboot").await;
+                                        }
+                                        Err(error) => status.fail(format!("installed game cleanup blocked reboot: {error}")),
+                                    }
+                                } else { request_system_power(&status, "Reboot").await; }
+                            }
                         }
                         let _ = slot.complete(token, identity);
                     }
@@ -511,12 +624,30 @@ pub async fn run_worker(
                             }
                         };
                         let _ = close_menu(&menu, &system_input, false, "shutdown").await;
-                        match &active_control {
-                            Some(control) => {
+                        match (&active_control, &installed_control) {
+                            (Some(control), _) => {
                                 status.mark_stopping();
                                 let _ = control.send(SessionControl::Shutdown).await;
                             }
-                            None => request_system_power(&status, "PowerOff").await,
+                            (None, Some(control)) => {
+                                if let Some(entry) = menu.installed.snapshot() {
+                                    menu.installed.update(entry.generation, "Stopping", String::new(), false);
+                                }
+                                let _ = control.send(SessionControl::Shutdown).await;
+                            }
+                            (None, None) => {
+                                if menu.installed.busy() {
+                                    match crate::installed::retry_cleanup().await {
+                                        Ok(()) => {
+                                            if let Some(entry) = menu.installed.snapshot() {
+                                                menu.installed.update(entry.generation, "Exited", String::new(), false);
+                                            }
+                                            request_system_power(&status, "PowerOff").await;
+                                        }
+                                        Err(error) => status.fail(format!("installed game cleanup blocked shutdown: {error}")),
+                                    }
+                                } else { request_system_power(&status, "PowerOff").await; }
+                            }
                         }
                         let _ = slot.complete(token, identity);
                     }
@@ -540,6 +671,27 @@ pub async fn run_worker(
                                     status.mark_stopping();
                                     let _ = control.send(SessionControl::Stop).await;
                                 }
+                                if let Some(control) = &installed_control {
+                                    let _ = control.send(SessionControl::Stop).await;
+                                }
+                                while let Some(result) = installed_tasks.join_next().await {
+                                    match result {
+                                        Ok((_, Err(error))) => eprintln!("Installed game shutdown: {error}"),
+                                        Err(error) => {
+                                            eprintln!("Installed game supervisor panicked during shutdown: {error}");
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                let native_cleanup = if menu.installed.busy() {
+                                    let result = crate::installed::retry_cleanup().await;
+                                    if result.is_ok() {
+                                        if let Some(entry) = menu.installed.snapshot() {
+                                            menu.installed.update(entry.generation, "Exited", String::new(), false);
+                                        }
+                                    }
+                                    result
+                                } else { Ok(()) };
                                 while let Some(result) = sessions.join_next().await {
                                     record_completion(&status, result);
                                 }
@@ -550,7 +702,7 @@ pub async fn run_worker(
                                         let _ = menu.compositor.storefront_ended(id).await;
                                     }
                                 }
-                                menu.compositor.game_ended().await
+                                native_cleanup.and(menu.compositor.game_ended().await)
                             },
                             system_input.set_mode(INTERCEPT_NONE),
                         ).await;
@@ -582,7 +734,7 @@ pub async fn run_worker(
                             input_event,
                             &menu,
                             &system_input,
-                            active_control.is_some(),
+                            active_control.is_some() || installed_control.is_some(),
                             &mut guide_buttons,
                         ).await?;
                     }
@@ -714,6 +866,44 @@ pub async fn run_worker(
                     }
                 }
             }
+            completed = installed_tasks.join_next(), if !installed_tasks.is_empty() => {
+                if let Some(result) = completed {
+                    installed_control = None;
+                    let power_method = match &result {
+                        Ok((_, Ok(SessionOutcome::RebootRequested))) => Some("Reboot"),
+                        Ok((_, Ok(SessionOutcome::ShutdownRequested))) => Some("PowerOff"),
+                        _ => None,
+                    };
+                    match result {
+                        Ok((_, Ok(outcome))) => println!("Installed game finished: {outcome}"),
+                        Ok((_, Err(error))) => eprintln!("Installed game failed or needs cleanup: {error}"),
+                        Err(error) => {
+                            eprintln!("Installed game supervisor failed: {error}");
+                            if let Some(entry) = menu.installed.snapshot() {
+                                menu.installed.update(entry.generation, "CleanupFailed", error.to_string(), false);
+                                match crate::installed::retry_cleanup().await {
+                                    Ok(()) => menu.installed.update(entry.generation, "Failed",
+                                        format!("supervisor failed; owned instance recovered: {error}"), false),
+                                    Err(cleanup) => menu.installed.update(entry.generation, "CleanupFailed",
+                                        format!("{error}; cleanup: {cleanup}"), false),
+                                }
+                            }
+                        }
+                    }
+                    let menu_was_open = menu.game_ended("installed-game-ended");
+                    if let Err(error) = menu.compositor.game_ended().await {
+                        eprintln!("Installed game library restoration: {error}");
+                    }
+                    if menu_was_open {
+                        if let Err(error) = system_input.set_mode(INTERCEPT_PASS).await {
+                            eprintln!("Installed game input restoration: {error}");
+                        }
+                    }
+                    if let Some(method) = power_method {
+                        request_system_power(&status, method).await;
+                    }
+                }
+            }
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 if let Some(result) = completed {
                     let power_method = requested_power_method(&result);
@@ -750,7 +940,8 @@ pub async fn run_worker(
                         Ok(game) => menu.storefronts.set_game("steam", game),
                         Err(error) => eprintln!("Steam game classification unavailable: {error}"),
                     }
-                    match menu.compositor.reconcile(menu.snapshot().open, active_control.is_some()).await {
+                    match menu.compositor.reconcile(menu.snapshot().open,
+                        active_control.is_some() || installed_control.is_some()).await {
                         Ok(()) => { if compositor_error.take().is_some() { println!("Sway supervision recovered."); } }
                         Err(error) => {
                             let error = error.to_string();
