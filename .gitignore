@@ -1,1 +1,19 @@
 /target
+
+# Local build outputs and development backups
+target/
+build/
+__pycache__/
+*.pyc
+*.log
+*.qslog
+*.pre-*
+*.before-*
+*.bak
+*.orig
+backups/
+*-backups/
+/zaman-sway-source-backup-*/
+/*.tar.gz
+/.env
+/.env.*

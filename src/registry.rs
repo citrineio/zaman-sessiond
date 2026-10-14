@@ -448,7 +448,27 @@ mod tests {
     use super::{Emulator, EmulatorExec, Registry, System};
     use std::collections::BTreeMap;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::io::ErrorKind;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_ROM: AtomicU64 = AtomicU64::new(0);
+
+    struct TestRom {
+        directory: PathBuf,
+        path: PathBuf,
+    }
+
+    impl Drop for TestRom {
+        fn drop(&mut self) {
+            if let Err(error) = fs::remove_dir_all(&self.directory) {
+                // Keep the original assertion visible if a test is panicking.
+                if !std::thread::panicking() {
+                    panic!("remove test ROM directory: {error}");
+                }
+            }
+        }
+    }
 
     fn test_registry(priorities: &[i64]) -> Registry {
         let system = System {
@@ -488,14 +508,28 @@ mod tests {
         }
     }
 
-    fn test_rom() -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("zaman ROM {unique}.nes"));
-        fs::write(&path, b"test").expect("write test ROM");
-        path
+    fn test_rom() -> TestRom {
+        loop {
+            let sequence = NEXT_ROM.fetch_add(1, Ordering::Relaxed);
+            let directory = std::env::temp_dir().join(format!(
+                "zaman-registry-test-{}-{sequence}",
+                std::process::id()
+            ));
+            // Atomically reserve the directory: never share it with another
+            // test or reuse leftovers from an earlier process with this PID.
+            match fs::create_dir(&directory) {
+                Ok(()) => {
+                    let rom = TestRom {
+                        path: directory.join("ROM with spaces.nes"),
+                        directory,
+                    };
+                    fs::write(&rom.path, b"test").expect("write test ROM");
+                    return rom;
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create test ROM directory: {error}"),
+            }
+        }
     }
 
     #[test]
@@ -503,34 +537,32 @@ mod tests {
         let registry = test_registry(&[10, 20]);
         let rom = test_rom();
         let launch = registry
-            .resolve("nes", rom.to_str().expect("UTF-8 path"))
+            .resolve("nes", rom.path.to_str().expect("UTF-8 path"))
             .expect("resolved launch");
 
         assert_eq!(launch.emulator_id, "emulator-1");
-        assert_eq!(launch.command.argv()[1], rom.to_string_lossy());
-        fs::remove_file(rom).expect("remove test ROM");
+        assert_eq!(launch.command.argv()[1], rom.path.to_string_lossy());
     }
 
     #[test]
     fn rejects_top_priority_ties() {
         let registry = test_registry(&[20, 20]);
         let rom = test_rom();
-        let result = registry.resolve("nes", rom.to_str().expect("UTF-8 path"));
+        let result = registry.resolve("nes", rom.path.to_str().expect("UTF-8 path"));
 
-        assert!(result.is_err());
-        fs::remove_file(rom).expect("remove test ROM");
+        let error = result.expect_err("equal top priorities must be rejected");
+        assert!(error.to_string().contains("priority tie for system nes"));
     }
 
     #[test]
     fn rejects_wrong_extension() {
         let registry = test_registry(&[20]);
         let original = test_rom();
-        let rom = original.with_extension("zip");
+        let rom = original.path.with_extension("zip");
         fs::write(&rom, b"test").expect("write test ROM");
         let result = registry.resolve("nes", rom.to_str().expect("UTF-8 path"));
 
-        assert!(result.is_err());
-        fs::remove_file(original).expect("remove original test ROM");
-        fs::remove_file(rom).expect("remove test ROM");
+        let error = result.expect_err("unsupported extension must be rejected");
+        assert!(error.to_string().contains("extension .zip is not valid for system nes"));
     }
 }

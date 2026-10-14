@@ -1,6 +1,40 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <node name="/com/kawnelectro/Zaman/Session1">
   <interface name="com.kawnelectro.Zaman.Session1">
+    <!-- DisplayState JSON uses millihertz, advertised modes and an optional
+         preview {token, output, mode, seconds_left}. Tokens are generation-bound. -->
+    <method name="DisplayStatus"><arg name="state_json" type="s" direction="out"/></method>
+    <method name="PreviewDisplay">
+      <arg name="generation" type="t" direction="in"/>
+      <arg name="output" type="s" direction="in"/>
+      <arg name="width" type="u" direction="in"/>
+      <arg name="height" type="u" direction="in"/>
+      <arg name="refresh_millihertz" type="u" direction="in"/>
+      <arg name="state_json" type="s" direction="out"/>
+    </method>
+    <method name="ConfirmDisplay">
+      <arg name="generation" type="t" direction="in"/>
+      <arg name="token" type="t" direction="in"/>
+      <arg name="state_json" type="s" direction="out"/>
+    </method>
+    <method name="RevertDisplay">
+      <arg name="generation" type="t" direction="in"/>
+      <arg name="token" type="t" direction="in"/>
+      <arg name="state_json" type="s" direction="out"/>
+    </method>
+    <method name="StorefrontStatus">
+      <arg name="id" type="s" direction="out"/>
+      <arg name="generation" type="t" direction="out"/>
+      <arg name="phase" type="s" direction="out"/>
+      <arg name="guide_owner" type="s" direction="out"/>
+      <arg name="game_running" type="b" direction="out"/>
+      <arg name="error" type="s" direction="out"/>
+    </method>
+    <method name="StorefrontAction">
+      <arg name="action" type="s" direction="in"/>
+      <arg name="id" type="s" direction="in"/>
+      <arg name="generation" type="s" direction="in"/>
+    </method>
     <method name="Launch">
       <arg name="system_id" type="s" direction="in"/>
       <arg name="rom_path" type="s" direction="in"/>

@@ -13,3 +13,24 @@
 ## 2026-09-26 — Uncompiled menu change contained an out-of-scope variable
 
 The first 0.6.7 source package used `error.is_none()` inside `MenuSurface::input`, where `error` was not defined. The condition belonged to the rendering branch after `error` was computed. The user found this at `cargo test --locked --bin zaman-menu`; the source was corrected. Run the menu binary's compile/test command before distributing a candidate whenever a Rust toolchain is available.
+
+## 2026-10-06 — Bluetooth agent alias was not recognized by zbus
+
+**Observed by the owner:** The 0.6.11 menu failed to compile with Serialize,
+DynamicType and SIGNATURE errors originating in the BlueZ Agent1 interface.
+
+**Cause:** Its public interface methods returned the `AgentResult<T>` alias.
+zbus 5.5.0 detects a fallible method by the last identifier in the written
+return type being `Result`; it does not resolve aliases named differently.
+It therefore generated a normal reply for the complete Result value instead
+of handling success and D-Bus errors separately.
+
+**Correction:** Spell out `std::result::Result<T, AgentError>` on all nine
+Agent1 methods. Keep the alias in ordinary helpers and the existing BlueZ
+error names. Remove the unrelated redundant network `redraw` assignment.
+The version remains 0.6.11; apply the build-fix patch after the original
+0.6.11 patch, then repeat the owner build and tests before installation.
+
+**Prevention:** Inspect the pinned macro implementation when using aliases in
+interface signatures. The owner retains compilation, installation and test
+execution; source review and patch checks do not establish a passing build.

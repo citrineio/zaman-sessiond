@@ -4,8 +4,19 @@ use crate::registry::{Registry, ResolvedLaunch};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::{mpsc, oneshot};
 use zaman_sessiond::contract::{MenuContextTuple, INTERFACE, PATH, VERSION};
+use zaman_sessiond::display::{DisplayManager, Mode};
 use zbus::object_server::SignalEmitter;
 use zbus::{fdo, interface, Connection};
+
+async fn display_request(
+    operation: impl FnOnce() -> std::result::Result<zaman_sessiond::display::DisplayState, String>
+        + Send + 'static,
+) -> fdo::Result<String> {
+    let state = tokio::task::spawn_blocking(operation).await
+        .map_err(|e| fdo::Error::Failed(e.to_string()))?
+        .map_err(fdo::Error::Failed)?;
+    serde_json::to_string(&state).map_err(|e| fdo::Error::Failed(e.to_string()))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
@@ -18,6 +29,8 @@ pub enum MenuAction {
 pub enum ApiCommand {
     Guarded { command: Box<ApiCommand>, reply: oneshot::Sender<std::result::Result<(), String>> },
     StartTransfer { menu_generation: u64, reply: oneshot::Sender<std::result::Result<u64, String>> },
+    Storefront { action: String, id: String, generation: u64,
+        reply: oneshot::Sender<std::result::Result<(), String>> },
     Launch(ResolvedLaunch),
     Stop,
     Menu {
@@ -131,6 +144,7 @@ pub struct SessionApi {
     status: SharedStatus,
     menu: MenuController,
     commands: mpsc::Sender<ApiCommand>,
+    display: DisplayManager,
 }
 
 pub async fn publish_menu_events(
@@ -192,12 +206,14 @@ impl SessionApi {
         status: SharedStatus,
         menu: MenuController,
         commands: mpsc::Sender<ApiCommand>,
+        display: DisplayManager,
     ) -> Self {
         Self {
             registry,
             status,
             menu,
             commands,
+            display,
         }
     }
 
@@ -245,6 +261,31 @@ impl SessionApi {
 
 #[interface(name = "com.kawnelectro.Zaman.Session1")]
 impl SessionApi {
+    /// JSON is versioned by the Session1 contract and shared Rust snapshot type.
+    async fn display_status(&self) -> fdo::Result<String> {
+        let display = self.display.clone();
+        display_request(move || display.status()).await
+    }
+
+    async fn preview_display(&self, generation: u64, output: &str,
+        width: u32, height: u32, refresh: u32) -> fdo::Result<String> {
+        self.require_transfer_idle()?;
+        self.require_open_menu()?;
+        let display = self.display.clone();
+        let output = output.to_string();
+        display_request(move || display.preview(generation, output, Mode { width, height, refresh })).await
+    }
+
+    async fn confirm_display(&self, generation: u64, token: u64) -> fdo::Result<String> {
+        let display = self.display.clone();
+        display_request(move || display.confirm(generation, token)).await
+    }
+
+    async fn revert_display(&self, generation: u64, token: u64) -> fdo::Result<String> {
+        let display = self.display.clone();
+        display_request(move || display.revert(generation, token)).await
+    }
+
     #[zbus(out_args("generation"))]
     async fn start_transfer(&self, menu_generation: u64) -> fdo::Result<u64> {
         let (reply, response) = oneshot::channel();
@@ -276,8 +317,24 @@ impl SessionApi {
     #[zbus(signal)]
     async fn transfer_input(signal_emitter: &SignalEmitter<'_>, generation: u64, event: &str, value: f64) -> zbus::Result<()>;
 
+    #[zbus(out_args("id", "generation", "phase", "guide_owner", "game_running", "error"))]
+    fn storefront_status(&self) -> (String, u64, String, String, bool, String) {
+        self.menu.storefronts.context()
+    }
+
+    async fn storefront_action(&self, action: &str, id: &str, generation: &str) -> fdo::Result<()> {
+        let generation = parse_transfer_generation(generation)?;
+        let (reply, response) = oneshot::channel();
+        self.send_command(ApiCommand::Storefront { action: action.into(), id: id.into(), generation, reply }).await?;
+        response.await.map_err(|_| fdo::Error::Failed("storefront worker stopped".into()))?
+            .map_err(fdo::Error::Failed)
+    }
+
     async fn launch(&self, system_id: &str, rom_path: &str) -> fdo::Result<()> {
         self.require_transfer_idle()?;
+        if self.menu.storefronts.active().is_some() || self.menu.storefronts.has_game() {
+            return Err(fdo::Error::Failed("return to library and close any storefront game before launching".into()));
+        }
         if self.menu.snapshot().open {
             return Err(fdo::Error::Failed(
                 "close the Zaman menu before launching a game".to_string(),
@@ -320,7 +377,12 @@ impl SessionApi {
 
     async fn exit_game(&self) -> fdo::Result<()> {
         self.require_transfer_idle()?;
-        self.require_open_menu()?;
+        if self.menu.storefronts.active().is_some() {
+            return Err(fdo::Error::Failed("exit the Steam game using Steam; the client is an independent session".into()));
+        }
+        // ExitGame is a session action shared by the fallback menu, Quickshell
+        // and CLI. Modern overlays do not set the fallback menu's open flag.
+        // Keep shutdown under the existing worker and its graceful stop policy.
         self.status.mark_stopping();
         self.send_command(ApiCommand::ExitGame).await
     }
@@ -402,16 +464,19 @@ impl SessionApi {
     }
 
     #[zbus(out_args("open", "generation", "reason"))]
-    fn menu_status(&self) -> (bool, u64, String) {
-        let menu = self.menu.snapshot();
-        (menu.open, menu.generation, menu.reason)
+    async fn menu_status(&self) -> fdo::Result<(bool, u64, String)> {
+        let shell = crate::quickshell_menu::status().await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        Ok((shell.presented_or_pending(), shell.generation, format!("quickshell:{}", shell.status)))
     }
 
     #[zbus(out_args("foreground", "return_target", "reason"))]
     fn foreground_status(&self) -> (String, String, String) {
         let menu = self.menu.snapshot();
         (
-            menu.foreground.as_str().to_string(),
+            if menu.foreground == crate::menu::Foreground::Storefront && self.menu.storefronts.context().4 {
+                "game".to_string()
+            } else { menu.foreground.as_str().to_string() },
             menu.return_target
                 .map(|target| target.as_str().to_string())
                 .unwrap_or_default(),

@@ -63,13 +63,15 @@ impl SessionControl {
 
 pub struct Session {
     systemd: UserSystemd,
+    compositor: crate::sway::SwayController,
     state: SessionState,
 }
 
 impl Session {
-    pub fn new(systemd: UserSystemd) -> Self {
+    pub fn new(systemd: UserSystemd, compositor: crate::sway::SwayController) -> Self {
         Self {
             systemd,
+            compositor,
             state: SessionState::Idle,
         }
     }
@@ -88,6 +90,19 @@ impl Session {
             }
         };
 
+        if self.compositor.enabled() {
+            let placement = async {
+                let cgroup = self.systemd.control_group(&game).await?;
+                self.compositor.game_started(cgroup).await
+            }.await;
+            if let Err(error) = placement {
+                // The service already launched: placement setup failure must
+                // still stop it through the existing graceful systemd policy.
+                let stopped = self.systemd.stop(&game).await;
+                self.transition(SessionState::Failed);
+                return combine_stop(Err(error), stopped);
+            }
+        }
         self.transition(SessionState::Running);
         println!("D-Bus Stop and natural game exit are now supervised.");
 

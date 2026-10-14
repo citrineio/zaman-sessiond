@@ -6,13 +6,16 @@ mod guide;
 mod inputplumber;
 mod menu;
 mod operations;
+mod quickshell_menu;
 mod registry;
 mod session;
 mod systemd;
+mod sway;
+mod storefront;
 mod transfer;
 
 use crate::api::{publish_menu_events, ApiCommand, SessionApi, SharedStatus};
-use crate::daemon::{monitor_menu_client, recover_runtime, run_worker};
+use crate::daemon::{recover_runtime, run_worker};
 use crate::error::Result;
 use crate::menu::MenuController;
 use crate::registry::Registry;
@@ -20,6 +23,7 @@ use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use zaman_sessiond::contract::{PATH, SERVICE, VERSION};
+use zaman_sessiond::display::DisplayManager;
 use zbus::connection::Builder;
 
 #[tokio::main(flavor = "current_thread")]
@@ -29,8 +33,13 @@ async fn main() -> Result<()> {
 
     let status = SharedStatus::new();
     let (menu, menu_events) = MenuController::new();
+    let display_menu = menu.clone();
+    let display = tokio::task::spawn_blocking(move || DisplayManager::new(move |generation| {
+        let context = display_menu.context();
+        context.0 && context.1 == generation && !context.4
+    })).await?;
     let (commands, receiver) = mpsc::channel(8);
-    let api = SessionApi::new(registry, status.clone(), menu.clone(), commands.clone());
+    let api = SessionApi::new(registry, status.clone(), menu.clone(), commands.clone(), display.clone());
     let connection = Builder::session()?
         .serve_at(PATH, api)?
         .name(SERVICE)?
@@ -41,19 +50,22 @@ async fn main() -> Result<()> {
 
     let worker = run_worker(receiver, status, menu);
     let menu_publisher = publish_menu_events(connection.clone(), menu_events);
-    let menu_client_monitor = monitor_menu_client(connection.clone(), commands.clone());
     tokio::pin!(worker);
     tokio::pin!(menu_publisher);
-    tokio::pin!(menu_client_monitor);
 
     let trigger_result = tokio::select! {
-        result = &mut worker => return result,
+        result = &mut worker => {
+            let _ = tokio::task::spawn_blocking(move || display.shutdown()).await;
+            return result;
+        },
         result = &mut menu_publisher => result,
-        result = &mut menu_client_monitor => result,
         result = wait_for_shutdown_signal() => result,
     };
 
     println!("zaman-sessiond shutting down.");
+    if let Err(error) = tokio::task::spawn_blocking(move || display.shutdown()).await? {
+        eprintln!("Display rollback on shutdown: {error}");
+    }
     let _ = commands.send(ApiCommand::Quit).await;
     let worker_result = worker.await;
     trigger_result?;

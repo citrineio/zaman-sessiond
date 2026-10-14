@@ -80,12 +80,20 @@ impl UserSystemd {
     }
 
     pub async fn launch(&self, command: &CommandSpec) -> Result<GameHandle> {
+        self.launch_named(command, GAME_UNIT, false).await
+    }
+
+    pub async fn stop_storefront(&self, id: &str) -> Result<()> {
+        self.stop(&GameHandle { unit: crate::storefront::unit(id)?.into() }).await
+    }
+
+    pub async fn launch_named(&self, command: &CommandSpec, unit: &str, storefront: bool) -> Result<GameHandle> {
         let manager = self.manager().await?;
 
-        let loaded: zbus::Result<OwnedObjectPath> = manager.call("GetUnit", &(GAME_UNIT,)).await;
-        if loaded.is_ok() {
+        let loaded: zbus::Result<OwnedObjectPath> = manager.call("GetUnit", &(unit,)).await;
+        if unit_exists(loaded)? {
             return Err(message(format!(
-                "another Zaman game session already owns {GAME_UNIT}"
+                "another Zaman game session already owns {unit}"
             )));
         }
 
@@ -95,10 +103,11 @@ impl UserSystemd {
         let mut properties = vec![
             ("Description", Value::new("Zaman supervised game session")),
             ("Type", Value::new("exec")),
+            ("ExitType", Value::new(if storefront { "cgroup" } else { "main" })),
             ("ExecStart", Value::new(exec_start)),
             ("KillMode", Value::new("control-group")),
-            ("KillSignal", Value::new(2_i32)), // SIGINT: Mesen graceful shutdown
-            ("TimeoutStopUSec", Value::new(3_000_000_u64)),
+            ("KillSignal", Value::new(if storefront { 15_i32 } else { 2_i32 })), // SIGINT: Mesen graceful shutdown
+            ("TimeoutStopUSec", Value::new(if storefront { 8_000_000_u64 } else { 3_000_000_u64 })),
             ("SendSIGKILL", Value::new(true)),
             ("CollectMode", Value::new("inactive-or-failed")),
         ];
@@ -113,16 +122,16 @@ impl UserSystemd {
         let job_path: OwnedObjectPath = manager
             .call(
                 "StartTransientUnit",
-                &(GAME_UNIT, "fail", properties, auxiliary_units),
+                &(unit, "fail", properties, auxiliary_units),
             )
             .await?;
 
-        println!("Queued systemd start job {job_path} for {GAME_UNIT}.");
-        wait_for_job(&mut removed_jobs, &job_path, GAME_UNIT, "start").await?;
-        println!("systemd confirmed {GAME_UNIT} started.");
+        println!("Queued systemd start job {job_path} for {unit}.");
+        wait_for_job(&mut removed_jobs, &job_path, unit, "start").await?;
+        println!("systemd confirmed {unit} started.");
 
         Ok(GameHandle {
-            unit: GAME_UNIT.to_string(),
+            unit: unit.to_string(),
         })
     }
 
@@ -135,7 +144,7 @@ impl UserSystemd {
         // Register the signal match before checking the unit. This closes the
         // race where a short-lived emulator exits immediately after launch.
         let loaded: zbus::Result<OwnedObjectPath> = manager.call("GetUnit", &(game.unit(),)).await;
-        if loaded.is_err() {
+        if !unit_exists(loaded)? {
             return Ok(());
         }
 
@@ -148,6 +157,13 @@ impl UserSystemd {
         }
 
         Err(message("systemd UnitRemoved stream closed"))
+    }
+
+    pub async fn control_group(&self, game: &GameHandle) -> Result<String> {
+        let path: OwnedObjectPath = self.manager().await?.call("GetUnit", &(game.unit(),)).await?;
+        let service = Proxy::new(&self.connection, SERVICE, path,
+            "org.freedesktop.systemd1.Service").await?;
+        Ok(service.get_property("ControlGroup").await?)
     }
 
     pub async fn stop(&self, game: &GameHandle) -> Result<()> {

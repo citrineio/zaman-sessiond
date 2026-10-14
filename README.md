@@ -1,7 +1,14 @@
 # zaman-sessiond
 
-Current release: **0.6.7**, including the previously unpushed 0.6.6 Transfer Games work. See [release notes](docs/release-0.6.7.md),
-[development notes](docs/session-0.6.7.md), and [mistakes and fixes](mistakes.md).
+See [Sprint 1 storefront candidate](docs/sprint1-storefronts.md) for the paired source branches and device acceptance.
+
+Current source candidate: **0.6.12** (menu cell icons and power confirmation; device validation pending).
+See [0.6.12 update and acceptance](docs/menu-power-0.6.12.md).
+See [0.6.11 update and acceptance](docs/menu-bluetooth-0.6.11.md).
+See [0.6.10 deployment and acceptance](docs/menu-feedback-0.6.10.md), including
+one-command display streaming with `./tools/zaman-stream`.
+See [display settings deployment](docs/display-settings.md). See [0.6.8 deployment and acceptance](docs/deploy-0.6.8.md),
+[0.6.7 release notes](docs/release-0.6.7.md), and [mistakes and fixes](mistakes.md).
 
 `zaman-sessiond` owns game sessions for Zaman OS. It is a persistent user
 service positioned between frontends, the emulator registry, InputPlumber, and
@@ -143,6 +150,14 @@ menu is open closes the menu and returns to the library.
 No long-hold action exists. Some controllers use a Guide hold for firmware
 power-off; Phase A assigns no hold gesture or power action.
 
+Zaman enables InputPlumber's native `ManageAllDevices` setting after each
+InputPlumber start/restart, using upstream device-specific and generic profiles.
+The service-start helper waits for the Manager interface and verifies readback;
+sessiond's existing discovery handles the resulting composites and D-Bus targets.
+Basic Bluetooth menu input was confirmed by the owner with InputPlumber 0.78.0.
+Persistent startup, reconnect, other controller mappings and gameplay still need
+acceptance. See [`docs/controller-discovery.md`](docs/controller-discovery.md).
+
 ## State model
 
 The public game state remains intentionally small and compatible:
@@ -208,6 +223,9 @@ MesenCE state preservation; those remain board acceptance tests.
 - `dist/dbus-1/services/com.kawnelectro.Zaman.Session1.service`
 - `interfaces/com.kawnelectro.Zaman.Session1.xml`
 - `registry/`
+- `dist/libexec/zaman-inputplumber-policy` → `/usr/libexec/zaman-inputplumber-policy`
+- `dist/systemd/system/inputplumber.service.d/50-zaman-management.conf` →
+  `/etc/systemd/system/inputplumber.service.d/50-zaman-management.conf`
 
 Packaging is intentionally thin: install files to their declared paths. Do not
 generate registry or policy data in Debian maintainer scripts. This keeps the
