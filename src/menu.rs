@@ -110,6 +110,7 @@ impl Default for MenuState {
 pub struct MenuController {
     pub compositor: crate::sway::SwayController,
     pub storefronts: crate::storefront::Storefronts,
+    pub installed: crate::installed::InstalledGames,
     state: Arc<Mutex<MenuState>>,
     events: mpsc::UnboundedSender<MenuEvent>,
     presented: watch::Sender<u64>,
@@ -125,6 +126,7 @@ impl MenuController {
             Self {
                 compositor: crate::sway::SwayController::from_environment(),
                 storefronts: crate::storefront::Storefronts::default(),
+                installed: crate::installed::InstalledGames::default(),
                 state: Arc::new(Mutex::new(MenuState::default())),
                 events,
                 presented,

@@ -35,6 +35,16 @@
       <arg name="id" type="s" direction="in"/>
       <arg name="generation" type="s" direction="in"/>
     </method>
+    <method name="InstalledGameStatus">
+      <arg name="generation" type="s" direction="out"/>
+      <arg name="app" type="s" direction="out"/>
+      <arg name="name" type="s" direction="out"/>
+      <arg name="phase" type="s" direction="out"/>
+      <arg name="error" type="s" direction="out"/>
+      <arg name="ready" type="b" direction="out"/>
+    </method>
+    <method name="InstalledGameLaunch"><arg name="app" type="s" direction="in"/></method>
+    <method name="InstalledGameClose"><arg name="generation" type="s" direction="in"/></method>
     <method name="Launch">
       <arg name="system_id" type="s" direction="in"/>
       <arg name="rom_path" type="s" direction="in"/>

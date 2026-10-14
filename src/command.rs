@@ -85,6 +85,7 @@ const FORWARDED_ENVIRONMENT: &[&str] = &[
     "DISPLAY",
     "LANG",
     "LC_ALL",
+    "SWAYSOCK",
     "WAYLAND_DISPLAY",
     "XAUTHORITY",
     "XDG_RUNTIME_DIR",
