@@ -250,3 +250,5 @@ later Buildroot integration mechanical.
 The library menu has Resume, Transfer Games, Reboot and Shut Down. Transfer runs in a separate fullscreen Python/QML window, while the same menu remains mapped below it. Sessiond owns readiness and input handoff. `zamanctl transfer` (or `zaman-transfer --gui`) launches from the library; it is refused during games or another foreground operation. The CLI acknowledges the reserved launch, not rendered readiness.
 
 Install the paired transfer 0.4.0 application and `dist/systemd/user/zaman-transfer-gui.service`. The unit is on-demand only; do not enable it. See `docs/deploy-0.6.6.md` for verification, backup, installation and rollback. No automatic Pegasus reload or background-transfer mode is included yet.
+
+Shared curated-game JSON, build/activation commands and rollback: [Shared catalog](docs/shared-catalog.md).

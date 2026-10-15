@@ -7,26 +7,103 @@ It never edits Pegasus settings, ROM metadata, or the Steam collection.
 
 import argparse
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 import secrets
+import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 
 
-GAMES = (
-    ("org.supertuxproject.SuperTux", "SuperTux", "Platformer",
-     "A jump-and-run game starring Tux the Penguin"),
-    ("net.supertuxkart.SuperTuxKart", "SuperTuxKart", "Racing",
-     "A kart racing game with Tux and friends"),
-    ("org.wesnoth.Wesnoth", "The Battle for Wesnoth", "Strategy",
-     "A turn-based fantasy strategy game"),
-    ("org.openttd.OpenTTD", "OpenTTD", "Simulation",
-     "An open source transport simulation game"),
-)
+from zaman_catalog import enabled_games, valid_id
+
 METADATA_NAME = "zaman-native-games.metadata.pegasus.txt"
 SIGNAL_SUFFIX = ".signal"
+ICON_SIZES = (512, 256, 128, 64, 48, 32)
+MAX_IMAGE_BYTES = 16 * 1024 * 1024
+
+
+def png_bytes(path: Path) -> bytes | None:
+    """Ignore unavailable/truncated title art and fall through to an app icon.
+
+    Flatpak exported icons are symlinks; read them without modifying the export.
+    A PNG-only shared contract avoids requiring optional Qt SVG plugins.
+    """
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES or data[:8] != b"\x89PNG\r\n\x1a\n":
+            return None
+        offset, width, height, has_pixels = 8, 0, 0, False
+        while offset + 12 <= len(data):
+            length = struct.unpack_from(">I", data, offset)[0]
+            end = offset + length + 12
+            if end > len(data):
+                return None
+            kind = data[offset + 4:offset + 8]
+            payload = data[offset + 8:end - 4]
+            checksum = struct.unpack_from(">I", data, end - 4)[0]
+            if zlib.crc32(kind + payload) & 0xffffffff != checksum:
+                return None
+            if offset == 8:
+                if kind != b"IHDR" or length != 13:
+                    return None
+                width, height = struct.unpack_from(">II", payload)
+                if not (0 < width <= 8192 and 0 < height <= 8192):
+                    return None
+            if kind == b"IDAT":
+                has_pixels = True
+            if kind == b"IEND":
+                return data if has_pixels and length == 0 and end == len(data) else None
+            offset = end
+    except OSError:
+        pass
+    return None
+
+
+def artwork_sources(app_id: str, package_logo: str = "") -> dict[str, bytes]:
+    data = xdg_dir("XDG_DATA_HOME", Path.home() / ".local/share")
+    logo = png_bytes(data / "zaman/game-artwork" / app_id / "logo.png")
+    if logo is None and package_logo:
+        logo = png_bytes(data / "flatpak/app" / app_id / "aarch64/stable/active/files"
+                         / package_logo)
+    icon_root = data / "flatpak/exports/share/icons/hicolor"
+    icon = next((image for size in ICON_SIZES
+                 if (image := png_bytes(icon_root / f"{size}x{size}/apps/{app_id}.png"))), None)
+    # Supply common roles because Pegasus themes choose their own card asset.
+    identity = logo or icon
+    if not identity:
+        return {}
+    return {"logo": identity, "boxFront": identity, "tile": identity}
+
+
+def artwork_path(directory: Path, image: bytes) -> Path:
+    return directory / (hashlib.sha256(image).hexdigest() + ".png")
+
+
+def publish_artwork(directory: Path, image: bytes) -> None:
+    if directory.is_symlink():
+        raise RuntimeError("Native artwork directory is a symlink; refusing to write")
+    directory.mkdir(parents=True, exist_ok=True)
+    path = artwork_path(directory, image)
+    if path.is_symlink():
+        raise RuntimeError("Native artwork file is a symlink; refusing to write")
+    if path.is_file() and path.read_bytes() == image:
+        return
+    fd, temporary = tempfile.mkstemp(prefix=".artwork-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o644)
+            stream.write(image)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def xdg_dir(variable: str, default: Path) -> Path:
@@ -47,7 +124,7 @@ def paths() -> tuple[Path, Path, Path]:
             state / "zaman/pegasus-library-sync")
 
 
-def installed_ids(flatpak: str = "/usr/bin/flatpak") -> set[str]:
+def installed_ids(games, flatpak: str = "/usr/bin/flatpak") -> set[str]:
     result = subprocess.run(
         [flatpak, "list", "--user", "--app", "--columns=ref:f"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -56,7 +133,7 @@ def installed_ids(flatpak: str = "/usr/bin/flatpak") -> set[str]:
     )
     if result.returncode != 0:
         raise RuntimeError("Flatpak list failed: " + result.stderr.strip()[:240])
-    wanted = {game[0] for game in GAMES}
+    wanted = {game["id"] for game in games}
     found = set()
     for raw in result.stdout.splitlines():
         ref = raw.strip()
@@ -99,18 +176,25 @@ def publish_theme_signal(metadata: Path) -> bool:
     return True
 
 
-def render(ids: set[str], marker_dir: Path) -> str:
+def render(ids: set[str], marker_dir: Path, artwork: dict | None = None, games=None) -> str:
     if not ids:
         return ""
     lines = ["# Generated by Zaman; do not edit this file.",
              "collection: Native Games", "shortname: native", ""]
-    for app_id, name, genre, summary in GAMES:
+    for game in (enabled_games() if games is None else games):
+        app_id, name, genre, summary = (game[k] for k in ("id", "name", "genre", "summary"))
         if app_id not in ids:
             continue
         lines.extend((f"game: {name}",
                       f"file: {marker_path(marker_dir, app_id)}",
                       f"genre: {genre}", f"summary: {summary}",
-                      f"launch: /usr/local/bin/zamanctl installed-game launch {app_id}", ""))
+                      f"launch: /usr/local/bin/zamanctl installed-game launch {app_id}"))
+        for role, image in (artwork or {}).get(app_id, {}).items():
+            path = artwork_path(marker_dir.parent / "artwork", image)
+            # A newline would create a second metadata directive.
+            if not any(ord(character) < 32 for character in str(path)):
+                lines.append(f"assets.{role}: {path}")
+        lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -130,31 +214,42 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def reconcile(dry_run: bool = False, flatpak: str = "/usr/bin/flatpak") -> str:
+    games = enabled_games()  # Validate a complete snapshot before any writes.
     metadata, marker_dir, state_dir = paths()
     if metadata.is_symlink() or marker_dir.is_symlink():
         raise RuntimeError("Zaman library path is a symlink; refusing to sync")
     if dry_run:
-        return _reconcile(metadata, marker_dir, installed_ids(flatpak), True)
+        return _reconcile(metadata, marker_dir, installed_ids(games, flatpak), True, games)
     state_dir.mkdir(parents=True, exist_ok=True)
     with (state_dir / "sync.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return _reconcile(metadata, marker_dir, installed_ids(flatpak), False)
+        return _reconcile(metadata, marker_dir, installed_ids(games, flatpak), False, games)
 
 
-def _reconcile(metadata: Path, marker_dir: Path, ids: set[str], dry_run: bool) -> str:
-    desired = render(ids, marker_dir)
+def _reconcile(metadata: Path, marker_dir: Path, ids: set[str], dry_run: bool, games) -> str:
+    artwork = {game["id"]: artwork_sources(game["id"], game["package_logo"])
+               for game in games if game["id"] in ids}
+    desired = render(ids, marker_dir, artwork, games)
+    artwork_dir = marker_dir.parent / "artwork"
+    images = {image for roles in artwork.values() for image in roles.values()}
+    missing_artwork = any(png_bytes(artwork_path(artwork_dir, image)) != image for image in images)
     current = metadata.read_text(encoding="utf-8") if metadata.exists() else ""
-    missing = [marker_path(marker_dir, item[0]) for item in GAMES
-               if item[0] in ids and not marker_path(marker_dir, item[0]).is_file()]
-    stale = [marker_path(marker_dir, item[0]) for item in GAMES
-             if item[0] not in ids and marker_path(marker_dir, item[0]).exists()]
-    for marker in missing + stale:
+    missing = [marker_path(marker_dir, app) for app in sorted(ids)
+               if not marker_path(marker_dir, app).is_file()]
+    # This directory belongs to this exporter. Prune removed catalog entries too.
+    stale = [p for p in marker_dir.glob("*.game")
+             if valid_id(p.stem) and p.stem not in ids and (p.is_file() or p.is_symlink())]
+    for marker in [marker_path(marker_dir, app) for app in ids] + stale:
         if marker.is_symlink():
             raise RuntimeError(f"Zaman marker is a symlink: {marker}")
-    changed = current != desired or bool(missing or stale)
+    changed = current != desired or bool(missing or stale) or missing_artwork
     if dry_run:
         return f"dry-run: {len(ids)} installed, {'change' if changed else 'unchanged'}"
 
+    # Publish complete images before metadata; image hashes also invalidate Qt's
+    # URL cache and rotate the reload signal when a logo changes at the same path.
+    for image in images:
+        publish_artwork(artwork_dir, image)
     # Create new markers before publishing metadata that references them.
     marker_dir.mkdir(parents=True, exist_ok=True)
     for marker in missing:
