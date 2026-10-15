@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.13] - 2026-10-15 (Sprint 3 source candidate)
+
+- Add an idempotent Pegasus Native Games generator for the four curated user
+  Flatpak games and `zamanctl library sync [--dry-run]`.
+- Reconcile once on daemon startup. Preserve Steam/ROM metadata and keep
+  failed Flatpak listings from deleting prior generated entries.
+- Q6A compilation, activation, and Pegasus refresh behavior remain to be
+  verified by the owner.
+
 ## Sprint 1 storefront source candidate (2026-10-12)
 
 Managed Dukkan/Steam clients, isolated workspaces, contextual resident-menu
