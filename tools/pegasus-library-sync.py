@@ -27,6 +27,8 @@ GAMES = (
      "A turn-based fantasy strategy game"),
     ("org.openttd.OpenTTD", "OpenTTD", "Simulation",
      "An open source transport simulation game"),
+    ("org.opensurge2d.OpenSurge", "Surge Engine", "Platformer",
+     "Play Surge the Rabbit, a retro platformer, and create your own games"),
 )
 METADATA_NAME = "zaman-native-games.metadata.pegasus.txt"
 SIGNAL_SUFFIX = ".signal"

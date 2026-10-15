@@ -188,6 +188,7 @@ class LifecycleTests(unittest.TestCase):
             driver = unittest.mock.Mock()
             try:
                 with patch.object(session, 'runtime_root', return_value=root), \
+                     patch.object(session, 'process_start', return_value='99'), \
                      contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(session.run_game(APP, 'a' * 32, driver, managed=True), 1)
                 driver.check_install.assert_not_called()

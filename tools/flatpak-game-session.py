@@ -22,6 +22,7 @@ APPS = {
     'net.supertuxkart.SuperTuxKart': 'SuperTuxKart',
     'org.wesnoth.Wesnoth': 'The Battle for Wesnoth',
     'org.openttd.OpenTTD': 'OpenTTD',
+    'org.opensurge2d.OpenSurge': 'Surge Engine',
 }
 SESSION_KEYS = ('WAYLAND_DISPLAY', 'DISPLAY', 'SWAYSOCK', 'XAUTHORITY',
                 'LANG', 'LC_ALL', 'XDG_SESSION_TYPE')

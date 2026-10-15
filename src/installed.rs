@@ -18,6 +18,7 @@ const APPS: &[(&str, &str)] = &[
     ("net.supertuxkart.SuperTuxKart", "SuperTuxKart"),
     ("org.wesnoth.Wesnoth", "The Battle for Wesnoth"),
     ("org.openttd.OpenTTD", "OpenTTD"),
+    ("org.opensurge2d.OpenSurge", "Surge Engine"),
 ];
 
 pub fn name(id: &str) -> Result<&'static str> {

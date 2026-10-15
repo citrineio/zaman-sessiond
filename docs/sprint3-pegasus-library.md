@@ -1,6 +1,6 @@
 # Sprint 3: Dukkan games in Pegasus
 
-`zamanctl library sync [--dry-run]` reconciles the four authorized native
+`zamanctl library sync [--dry-run]` reconciles the five authorized native
 Flatpak games with the current user's installed `aarch64/stable` refs. The
 daemon also runs a best-effort sync on startup. Dukkan requests sync after a
 successful, postcondition-verified install or uninstall. A sync failure does
@@ -19,7 +19,7 @@ The Steam tile remains removed. The sync never touches Steam metadata, ROM
 directories, Pegasus settings, or favorites. The generated marker files are
 Pegasus existence checks, not executables. Each game gets an explicit fixed
 `zamanctl installed-game launch <app-id>` command. `zaman-sessiond` still
-authorizes only its four curated IDs, and the managed helper independently
+authorizes only its curated IDs, and the managed helper independently
 verifies the installed user `aarch64/stable` Flatpak ref at launch.
 
 The installed Pegasus build has no external CLI or D-Bus game-list reload
