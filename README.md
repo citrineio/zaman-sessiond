@@ -2,8 +2,8 @@
 
 See [Sprint 1 storefront candidate](docs/sprint1-storefronts.md) for the paired source branches and device acceptance.
 
-Current source candidate: **0.6.12** (menu cell icons and power confirmation; device validation pending).
-See [0.6.12 update and acceptance](docs/menu-power-0.6.12.md).
+Current source candidate: **0.6.13** (Pegasus Native Games library sync and
+Q6A-validated in-process refresh). See [Sprint 3 Pegasus library sync](docs/sprint3-pegasus-library.md).
 See [0.6.11 update and acceptance](docs/menu-bluetooth-0.6.11.md).
 See [0.6.10 deployment and acceptance](docs/menu-feedback-0.6.10.md), including
 one-command display streaming with `./tools/zaman-stream`.

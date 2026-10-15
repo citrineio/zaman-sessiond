@@ -49,6 +49,19 @@ async fn main() -> Result<()> {
 
     println!("zaman-sessiond {VERSION} ready on {SERVICE} {PATH}");
 
+    // Repair the Pegasus collection after external Flatpak changes or a prior
+    // interrupted transaction. This is best-effort and cannot delay the daemon.
+    let _library_sync = tokio::task::spawn_blocking(|| {
+        let helper = std::env::var_os("ZAMAN_PEGASUS_LIBRARY_SYNC_HELPER")
+            .unwrap_or_else(|| zaman_sessiond::PEGASUS_LIBRARY_SYNC_HELPER.into());
+        match std::process::Command::new("/usr/bin/python3").arg(helper).arg("sync").output() {
+            Ok(output) if output.status.success() => {},
+            Ok(output) => eprintln!("Pegasus library sync failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()),
+            Err(error) => eprintln!("Pegasus library sync could not start: {error}"),
+        }
+    });
+
     let worker = run_worker(receiver, status, menu);
     let menu_publisher = publish_menu_events(connection.clone(), menu_events);
     tokio::pin!(worker);

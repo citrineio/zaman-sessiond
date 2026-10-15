@@ -12,6 +12,20 @@ type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(arguments.as_slice(), [library, sync] if library == "library" && sync == "sync")
+        || matches!(arguments.as_slice(), [library, sync, preview]
+            if library == "library" && sync == "sync" && preview == "--dry-run") {
+        let helper = std::env::var_os("ZAMAN_PEGASUS_LIBRARY_SYNC_HELPER")
+            .unwrap_or_else(|| zaman_sessiond::PEGASUS_LIBRARY_SYNC_HELPER.into());
+        let mut command = std::process::Command::new("/usr/bin/python3");
+        command.arg(helper).arg("sync");
+        if arguments.len() == 3 { command.arg("--dry-run"); }
+        let status = command.status()?;
+        if !status.success() {
+            return Err(io::Error::other("Pegasus library sync failed; see the error above").into());
+        }
+        return Ok(());
+    }
     let connection = Connection::session().await?;
     let proxy = Proxy::new(&connection, SERVICE, PATH, INTERFACE).await?;
 
@@ -106,7 +120,7 @@ async fn main() -> Result<()> {
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: zamanctl installed-game {launch APP|status|close} | storefront launch {dukkan|steam} | storefront {home|close} | storefront-status | status | menu {open|close|toggle} | menu-status | version | transfer | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
+                "usage: zamanctl library sync [--dry-run] | installed-game {launch APP|status|close} | storefront launch {dukkan|steam} | storefront {home|close} | storefront-status | status | menu {open|close|toggle} | menu-status | version | transfer | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
             )
             .into())
         }
