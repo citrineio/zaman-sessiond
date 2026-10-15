@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import struct
 import unittest
+import zlib
 from unittest.mock import patch
 
 
@@ -14,6 +16,14 @@ SCRIPT = Path(__file__).with_name("pegasus-library-sync.py")
 SPEC = importlib.util.spec_from_file_location("pegasus_library_sync", SCRIPT)
 sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
+
+
+def png(red=0):
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes([0, red, 0, 0]))) + chunk(b"IEND", b""))
 
 
 class PegasusLibrarySyncTests(unittest.TestCase):
@@ -44,6 +54,66 @@ class PegasusLibrarySyncTests(unittest.TestCase):
     def flatpak(self, refs, code=0):
         return patch.object(sync.subprocess, "run", return_value=subprocess.CompletedProcess(
             ["flatpak"], code, refs, "unavailable" if code else ""))
+
+    def image(self, relative, red=0):
+        path = self.root / "data" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png(red))
+        return path
+
+    def test_offline_exported_icon_is_copied_for_all_theme_roles(self):
+        app = "org.supertuxproject.SuperTux"
+        original = self.image(f"flatpak/exports/share/icons/hicolor/128x128/apps/{app}.png")
+        # Flatpak exports are symlinks. A real symlink must still be usable.
+        target = original.with_suffix(".actual")
+        original.rename(target)
+        original.symlink_to(target)
+        with self.flatpak(f"app/{app}/aarch64/stable\n"):
+            sync.reconcile()
+            contents = self.metadata.read_text()
+            for role in ("logo", "boxFront", "tile"):
+                line = next(x for x in contents.splitlines() if x.startswith(f"assets.{role}: "))
+                cached = Path(line.split(": ", 1)[1])
+                self.assertEqual(cached.read_bytes(), target.read_bytes())
+                self.assertFalse(cached.is_symlink())
+            signals = self.signals()
+            self.assertIn("unchanged", sync.reconcile())
+            self.assertEqual(signals, self.signals())
+
+    def test_title_priority_corrupt_fallback_and_logo_change_refresh(self):
+        app = "org.supertuxproject.SuperTux"
+        self.image(f"flatpak/exports/share/icons/hicolor/128x128/apps/{app}.png", 1)
+        packaged = self.image(f"flatpak/app/{app}/aarch64/stable/active/files/"
+                              + sync.PACKAGED_LOGOS[app], 2)
+        self.assertEqual(sync.artwork_sources(app)["logo"], packaged.read_bytes())
+        title = self.image(f"zaman/game-artwork/{app}/logo.png", 3)
+        self.assertEqual(sync.artwork_sources(app)["logo"], title.read_bytes())
+        with self.flatpak(f"app/{app}/aarch64/stable\n"):
+            sync.reconcile()
+            before, signal = self.metadata.read_text(), self.signals()
+            title.write_bytes(png(4))
+            self.assertIn("updated", sync.reconcile())
+            self.assertNotEqual(before, self.metadata.read_text())
+            self.assertNotEqual(signal, self.signals())
+            title.write_bytes(b"not an image")
+            packaged.write_bytes(png(2)[:-1])
+            self.assertEqual(sync.artwork_sources(app)["logo"], png(1))
+            sync.reconcile()
+
+    def test_artwork_dry_run_and_repair(self):
+        app = "org.openttd.OpenTTD"
+        self.image(f"flatpak/exports/share/icons/hicolor/128x128/apps/{app}.png")
+        cache = self.markers.parent / "artwork"
+        with self.flatpak(f"app/{app}/aarch64/stable\n"):
+            sync.reconcile(True)
+            self.assertFalse(cache.exists())
+            sync.reconcile()
+            asset = next(cache.glob("*.png"))
+            signal = self.signals()
+            asset.write_bytes(b"corrupt cache")
+            self.assertIn("updated", sync.reconcile())
+            self.assertEqual(asset.read_bytes(), png())
+            self.assertNotEqual(signal, self.signals())
 
     def test_two_installed_games_and_repeated_sync(self):
         refs = ("Ref\n"
