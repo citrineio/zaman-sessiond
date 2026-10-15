@@ -26,6 +26,22 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if let [command, action] = arguments.as_slice() {
+        if command == "catalog" {
+            match action.as_str() {
+                "path" => println!("{}", zaman_sessiond::catalog::path()?.display()),
+                "validate" => {
+                    let games = zaman_sessiond::catalog::load()?;
+                    println!("Catalog valid: {} entries, {} enabled", games.len(), games.iter().filter(|g| g.enabled).count());
+                },
+                "list" => for game in zaman_sessiond::catalog::load()? {
+                    println!("{}\t{}\t{}", game.id, if game.enabled { "enabled" } else { "disabled" }, game.name);
+                },
+                _ => return Err(io::Error::other("expected catalog path, validate or list").into()),
+            }
+            return Ok(());
+        }
+    }
     let connection = Connection::session().await?;
     let proxy = Proxy::new(&connection, SERVICE, PATH, INTERFACE).await?;
 

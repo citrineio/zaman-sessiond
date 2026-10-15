@@ -13,17 +13,8 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout, Instant};
 
 pub const UNIT: &str = "zaman-installed-game.service";
-const APPS: &[(&str, &str)] = &[
-    ("org.supertuxproject.SuperTux", "SuperTux"),
-    ("net.supertuxkart.SuperTuxKart", "SuperTuxKart"),
-    ("org.wesnoth.Wesnoth", "The Battle for Wesnoth"),
-    ("org.openttd.OpenTTD", "OpenTTD"),
-    ("org.opensurge2d.OpenSurge", "Surge Engine"),
-];
-
-pub fn name(id: &str) -> Result<&'static str> {
-    APPS.iter().find(|(app, _)| *app == id).map(|(_, name)| *name)
-        .ok_or_else(|| message("application is outside the curated installed-game catalog"))
+pub fn name(id: &str) -> Result<String> {
+    zaman_sessiond::catalog::require(id)
 }
 
 fn control_outcome(control: SessionControl) -> SessionOutcome {
@@ -73,7 +64,9 @@ impl InstalledGames {
             "Starting" | "Running" | "Stopping" | "CleanupFailed"))
     }
     pub fn reserve(&self, app: &str) -> Result<Entry> {
-        let title = name(app)?;
+        self.reserve_named(app, name(app)?)
+    }
+    fn reserve_named(&self, app: &str, title: String) -> Result<Entry> {
         let mut state = self.state.lock().unwrap();
         if state.current.as_ref().is_some_and(|e| matches!(e.phase.as_str(),
             "Starting" | "Running" | "Stopping" | "CleanupFailed")) {
@@ -254,13 +247,13 @@ pub async fn run(entry: Entry, state: InstalledGames, compositor: crate::sway::S
 mod tests {
     use super::*;
     #[test] fn catalog_rejects_untrusted_argv() {
-        assert!(name("net.supertuxkart.SuperTuxKart").is_ok());
+        assert!(zaman_sessiond::catalog::parse(include_bytes!("../catalog/games.json")).unwrap().iter().any(|g| g.id == "net.supertuxkart.SuperTuxKart"));
         assert!(name("../../flatpak").is_err());
     }
     #[test] fn cleanup_failed_blocks_replacement() {
         let state = InstalledGames::default();
-        let entry = state.reserve("org.openttd.OpenTTD").unwrap();
+        let entry = state.reserve_named("org.openttd.OpenTTD", "OpenTTD".into()).unwrap();
         state.update(entry.generation, "CleanupFailed", "uncertain".into(), false);
-        assert!(state.reserve("org.wesnoth.Wesnoth").is_err());
+        assert!(state.reserve_named("org.wesnoth.Wesnoth", "Wesnoth".into()).is_err());
     }
 }

@@ -13,17 +13,11 @@ import sys
 import time
 import tempfile
 import uuid
+from zaman_catalog import enabled_games, require_enabled, valid_id
 
 UNIT = 'zaman-dukkan-game-probe.service'
 WORKSPACE = 'dukkan-game-probe'
 GRACE_SECONDS = 8
-APPS = {
-    'org.supertuxproject.SuperTux': 'SuperTux',
-    'net.supertuxkart.SuperTuxKart': 'SuperTuxKart',
-    'org.wesnoth.Wesnoth': 'The Battle for Wesnoth',
-    'org.openttd.OpenTTD': 'OpenTTD',
-    'org.opensurge2d.OpenSurge': 'Surge Engine',
-}
 SESSION_KEYS = ('WAYLAND_DISPLAY', 'DISPLAY', 'SWAYSOCK', 'XAUTHORITY',
                 'LANG', 'LC_ALL', 'XDG_SESSION_TYPE')
 
@@ -146,8 +140,7 @@ class Driver:
         return instances(call(['/usr/bin/flatpak', 'ps', '--columns=instance,pid,application:f']))
 
     def check_install(self, app):
-        if app not in APPS:
-            raise RuntimeError('Application is not in the curated probe catalog')
+        require_enabled(app)
         ref = call(['/usr/bin/flatpak', 'info', '--user', '--arch=aarch64', '--show-ref', app, 'stable']).strip()
         if ref != f'app/{app}/aarch64/stable':
             raise RuntimeError('Expected an installed user aarch64/stable application')
@@ -214,7 +207,8 @@ class ManagedDriver(Driver):
     """Native sessiond owns placement and focus; this driver owns only the sandbox."""
     def check_install(self, app):
         super().check_install(app)
-        if any(row['app'] in APPS for row in self.rows()):
+        enabled = {g['id'] for g in enabled_games()}
+        if any(row['app'] in enabled for row in self.rows()):
             raise RuntimeError('Another curated Flatpak game is already running')
 
     def place(self, record, previous):
@@ -253,8 +247,9 @@ def read_instance(fd, child, timeout=12):
 
 def run_game(app, nonce, driver=None, managed=False):
     driver = driver or (ManagedDriver() if managed else Driver())
+    title = require_enabled(app)['name']
     root = runtime_root(managed)
-    record = {'app': app, 'name': APPS.get(app, ''), 'nonce': nonce,
+    record = {'app': app, 'name': title, 'nonce': nonce,
               'phase': 'Starting', 'launcher_pid': os.getpid(),
               'launcher_start': process_start(os.getpid()), 'instance': '',
               'error': '', 'forced': False, 'windows': []}
@@ -465,7 +460,7 @@ def recover_managed():
     if not state.exists():
         return
     record = load_json(state)
-    if record.get('app') not in APPS or not record.get('nonce'):
+    if not valid_id(record.get('app')) or not isinstance(record.get('nonce'), str) or len(record['nonce']) != 32 or any(c not in '0123456789abcdef' for c in record['nonce']):
         raise RuntimeError('Invalid managed game record; refusing broad cleanup')
     driver = ManagedDriver()
     unit_state = active_state('zaman-installed-game.service')
@@ -521,7 +516,7 @@ def main():
     parser.add_argument('nonce', nargs='?')
     args = parser.parse_args()
     if args.action in ('run', 'run-managed'):
-        if args.app not in APPS or not args.nonce or len(args.nonce) != 32 or any(c not in '0123456789abcdef' for c in args.nonce):
+        if not valid_id(args.app) or not args.nonce or len(args.nonce) != 32 or any(c not in '0123456789abcdef' for c in args.nonce):
             raise RuntimeError('Invalid owned launch request')
         return run_game(args.app, args.nonce, managed=args.action == 'run-managed')
     if args.action == 'recover-managed':

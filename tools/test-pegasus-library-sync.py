@@ -3,6 +3,7 @@
 
 import importlib.util
 import os
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -31,8 +32,11 @@ class PegasusLibrarySyncTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.catalog = self.root / "catalog.json"
+        self.catalog.write_bytes((SCRIPT.parent.parent / "catalog/games.json").read_bytes())
         env = patch.dict(os.environ, {
             "HOME": str(self.root),
+            "ZAMAN_CATALOG_PATH": str(self.catalog),
             "XDG_CONFIG_HOME": str(self.root / "config"),
             "XDG_DATA_HOME": str(self.root / "data"),
             "XDG_STATE_HOME": str(self.root / "state"),
@@ -47,6 +51,34 @@ class PegasusLibrarySyncTests(unittest.TestCase):
         self.theme = self.metadata.parent.parent / "themes/zaman"
         self.theme.mkdir(parents=True)
         (self.theme / "theme.qml").write_text("import QtQuick 2.12\n")
+
+    def test_live_catalog_add_disable_remove_and_invalid_preservation(self):
+        app = "org.example.NewGame"
+        row = {"id": app, "name": "New Game"}
+        self.catalog.write_text(json.dumps({"schema_version": 1, "games": [row]}))
+        self.image(f"flatpak/exports/share/icons/hicolor/128x128/apps/{app}.png")
+        with self.flatpak(f"app/{app}/aarch64/stable\n"):
+            sync.reconcile()
+            self.assertIn("game: New Game", self.metadata.read_text())
+            self.assertTrue(sync.marker_path(self.markers, app).exists())
+            snapshot = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file() and p != self.catalog}
+            for malformed in ["{", json.dumps({"schema_version": 1, "games": [row, row]})]:
+                self.catalog.write_text(malformed)
+                with self.assertRaises(ValueError): sync.reconcile()
+                self.assertEqual(snapshot, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file() and p != self.catalog})
+            self.catalog.unlink()
+            with self.assertRaises(OSError): sync.reconcile()
+            self.assertEqual(snapshot, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file() and p != self.catalog})
+            self.catalog.write_text(json.dumps({"schema_version": 1, "games": [{**row, "enabled": False}]}))
+            sync.reconcile()
+            self.assertFalse(self.metadata.exists())
+            self.assertFalse(sync.marker_path(self.markers, app).exists())
+            self.catalog.write_text(json.dumps({"schema_version": 1, "games": [row]}))
+            sync.reconcile()
+            self.catalog.write_text(json.dumps({"schema_version": 1, "games": []}))
+            sync.reconcile()
+            self.assertFalse(sync.marker_path(self.markers, app).exists())
+        self.assertEqual(self.steam.read_text(), "collection: Steam\ngame: Steam\n")
 
     def signals(self):
         return list((self.theme / "library-refresh").glob("*.signal"))
@@ -84,10 +116,10 @@ class PegasusLibrarySyncTests(unittest.TestCase):
         app = "org.supertuxproject.SuperTux"
         self.image(f"flatpak/exports/share/icons/hicolor/128x128/apps/{app}.png", 1)
         packaged = self.image(f"flatpak/app/{app}/aarch64/stable/active/files/"
-                              + sync.PACKAGED_LOGOS[app], 2)
-        self.assertEqual(sync.artwork_sources(app)["logo"], packaged.read_bytes())
+                              + next(g["package_logo"] for g in sync.enabled_games() if g["id"] == app), 2)
+        self.assertEqual(sync.artwork_sources(app, next(g["package_logo"] for g in sync.enabled_games() if g["id"] == app))["logo"], packaged.read_bytes())
         title = self.image(f"zaman/game-artwork/{app}/logo.png", 3)
-        self.assertEqual(sync.artwork_sources(app)["logo"], title.read_bytes())
+        self.assertEqual(sync.artwork_sources(app, next(g["package_logo"] for g in sync.enabled_games() if g["id"] == app))["logo"], title.read_bytes())
         with self.flatpak(f"app/{app}/aarch64/stable\n"):
             sync.reconcile()
             before, signal = self.metadata.read_text(), self.signals()
@@ -97,7 +129,7 @@ class PegasusLibrarySyncTests(unittest.TestCase):
             self.assertNotEqual(signal, self.signals())
             title.write_bytes(b"not an image")
             packaged.write_bytes(png(2)[:-1])
-            self.assertEqual(sync.artwork_sources(app)["logo"], png(1))
+            self.assertEqual(sync.artwork_sources(app, next(g["package_logo"] for g in sync.enabled_games() if g["id"] == app))["logo"], png(1))
             sync.reconcile()
 
     def test_artwork_dry_run_and_repair(self):

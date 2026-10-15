@@ -18,9 +18,28 @@ spec = importlib.util.spec_from_file_location('session', SCRIPT)
 session = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(session)
 APP = 'org.supertuxproject.SuperTux'
+# Explicit test fixture, never a runtime catalog fallback.
+os.environ['ZAMAN_CATALOG_PATH'] = str(SCRIPT.parent.parent / 'catalog/games.json')
 
 
 class IdentityTests(unittest.TestCase):
+    def test_cleanup_does_not_read_current_catalog(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            record = {'app': 'org.example.Removed', 'nonce': 'a' * 32, 'instance': '123',
+                      'instance_pid': 20, 'instance_start': '99'}
+            (root / 'session.json').write_text(json.dumps(record))
+            with patch.dict(os.environ, {'ZAMAN_CATALOG_PATH': str(root / 'missing.json')}), \
+                 patch.object(session, 'runtime_root', return_value=root), \
+                 patch.object(session, 'active_state', return_value='inactive'), \
+                 patch.object(session.ManagedDriver, 'force') as force, \
+                 patch.object(session.ManagedDriver, 'owned', return_value=False):
+                session.recover_managed()
+                force.assert_called_once()
+                self.assertEqual({k: force.call_args.args[0][k] for k in record}, record)
+                self.assertEqual(json.loads((root / 'session.json').read_text())['phase'], 'Exited')
+                with self.assertRaises(OSError): session.Driver().check_install(record['app'])
+
     def test_instances_skip_headers_and_preserve_numeric_strings(self):
         rows = session.instances(f'Instance PID Application\n3126823604 10381 {APP}\n')
         self.assertEqual(rows, [{'instance': '3126823604', 'pid': 10381, 'app': APP}])
