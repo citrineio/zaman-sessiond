@@ -101,6 +101,40 @@ fn owns_foreground(foreground: &str) -> bool {
     matches!(foreground, "library" | "game" | "storefront")
 }
 
+// A reconnect may introduce a fresh controller in NONE while the menu is open.
+// Restoring that saved value would disable Guide after returning to Zaman.
+// Derive the return mode from fresh authoritative state, never the current page.
+fn return_intercept_mode(saved: u32, owner: Option<(&str, &str)>) -> u32 {
+    if saved > 1 { return saved; }
+    match owner {
+        Some(("steam", "Running")) => 0,
+        Some(("zaman", _)) | Some(("steam", _)) => 1,
+        _ => saved,
+    }
+}
+
+async fn guide_return_owner(session: &Connection, expected_foreground: &str) -> Result<(String, String)> {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        let bus = Proxy::new(session, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus").await?;
+        let owner: String = bus.call("GetNameOwner", &(SERVICE)).await?;
+        let proxy = Proxy::new(session, owner.as_str(), PATH, INTERFACE).await?;
+        let before: ForegroundStatusTuple = proxy.call("ForegroundStatus", &()).await?;
+        let store: (String, u64, String, String, bool, String) = proxy.call("StorefrontStatus", &()).await?;
+        let after: ForegroundStatusTuple = proxy.call("ForegroundStatus", &()).await?;
+        let confirmed: String = bus.call("GetNameOwner", &(SERVICE)).await?;
+        if owner != confirmed || before != after || after.0 != expected_foreground {
+            return Err(message("foreground/session owner changed during Guide restoration"));
+        }
+        Ok::<_, error::DynError>((store.3, store.2))
+    }).await?
+}
+
+fn log_close_request(command: &Value) {
+    timing_log(&format!("[menu-close] page={} tab={}",
+        command.get("page").unwrap_or(&Value::Null),
+        command.get("tab").unwrap_or(&Value::Null)));
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct ControllerInfo {
     path: String,
@@ -327,13 +361,23 @@ impl ControllerLease {
             view
         }).collect()
     }
-    async fn restore(&self, current_foreground: Option<&str>) -> Result<()> {
+    async fn restore(&self, current_foreground: Option<&str>, session: &Connection) -> Result<()> {
         // The production menu/Transfer may have taken ownership in the interim.
         if current_foreground.is_some_and(|f| !owns_foreground(f)) { return Ok(()); }
         let Some(connection) = self.connection.as_ref() else { return Ok(()); };
         let bus = Proxy::new(connection, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus").await?;
         let owner: String = bus.call("GetNameOwner", &(INPUT_SERVICE,)).await?;
         if owner != self.owner { return Ok(()); }
+        let guide_owner = match current_foreground {
+            Some(foreground) => match guide_return_owner(session, foreground).await {
+                Ok(owner) => Some(owner),
+                Err(error) => {
+                    timing_log(&format!("[menu-restore] Guide ownership unavailable; retaining saved modes: {error}"));
+                    None
+                }
+            },
+            None => None,
+        };
         let mut failures = Vec::new();
         for (path, original) in &self.saved {
             if !self.touched.contains(path) { continue; }
@@ -347,7 +391,14 @@ impl ControllerLease {
                 }
                 let current: u32 = proxy.get_property("InterceptMode").await?;
                 // A different owner or daemon refresh may already have restored it.
-                if current == ALL { proxy.set_property("InterceptMode", *original).await?; }
+                if current == ALL {
+                    let ownership = guide_owner.as_ref().map(|(owner, phase)| (owner.as_str(), phase.as_str()));
+                    let restored = return_intercept_mode(*original, ownership);
+                    proxy.set_property("InterceptMode", restored).await?;
+                    timing_log(&format!("[menu-restore] {path} saved={original} current={current} guide={ownership:?} restored={restored}"));
+                } else {
+                    timing_log(&format!("[menu-restore] {path} skipped: current={current}, menu no longer owns ALL"));
+                }
                 Ok::<_, error::DynError>(())
             }).await;
             match result {
@@ -487,7 +538,7 @@ async fn next_input(monitor: &mut Option<ControllerMonitor>) -> Option<Result<Sy
 }
 
 fn menu_event(event: &str) -> bool {
-    matches!(event, "ui_up"|"ui_down"|"ui_left"|"ui_right"|"ui_accept"|"ui_cancel"|"ui_back"|"ui_context"|"ui_action")
+    matches!(event, "ui_up"|"ui_down"|"ui_left"|"ui_right"|"ui_accept"|"ui_cancel"|"ui_back"|"ui_context"|"ui_action"|"ui_l1"|"ui_r1")
 }
 
 fn usable_press(event: &str, value: f64, presented: bool) -> bool {
@@ -798,7 +849,7 @@ async fn run_session(session: &Connection, commands: &mut mpsc::Receiver<String>
                                     let Some(command) = command else { *shutdown = true; break 'preview; };
                                     if let Ok(command) = serde_json::from_str::<Value>(&command) {
                                         match command["action"].as_str() {
-                                            Some("close") => break 'preview,
+                                            Some("close") => { log_close_request(&command); break 'preview; },
                                             Some("opened") => { presented = true; last_heartbeat = Instant::now(); }
                                             Some("heartbeat") => last_heartbeat = Instant::now(),
                                             _ if presented => display.handle(&command)?,
@@ -847,7 +898,7 @@ async fn run_session(session: &Connection, commands: &mut mpsc::Receiver<String>
                     let Some(command) = command else { *shutdown = true; break; };
                     let Ok(command) = serde_json::from_str::<Value>(&command) else { continue };
                     match command["action"].as_str() {
-                        Some("close") => break,
+                        Some("close") => { log_close_request(&command); break; },
                         Some("opened") => { presented = true; last_heartbeat = Instant::now(); }
                         Some("heartbeat") => last_heartbeat = Instant::now(),
                         _ if presented => display.handle(&command)?,
@@ -904,7 +955,7 @@ async fn run_session(session: &Connection, commands: &mut mpsc::Receiver<String>
     let restored_focus = if current.as_deref().is_some_and(owns_foreground) {
         restore_focus(&socket, saved, initial, current.as_deref().unwrap().to_owned()).await
     } else { Ok(()) };
-    let restored_input = lease.restore(current.as_deref()).await;
+    let restored_input = lease.restore(current.as_deref(), session).await;
     let mut errors = Vec::new();
     for result in [operation, restored_input, restored_focus, restored_display] {
         if let Err(error) = result { errors.push(error.to_string()); }
@@ -915,6 +966,10 @@ async fn run_session(session: &Connection, commands: &mut mpsc::Receiver<String>
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--guide-restore-version") {
+        println!("zaman-guide-return-policy-v1");
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--resident-version") {
         println!("zaman-menu-helper-resident-v1");
         return;
@@ -1128,5 +1183,39 @@ mod tests {
         let tree = json!({"nodes":[{"id":10,"pid":100},
             {"floating_nodes":[{"id":20,"pid":200,"focused":true}]}]});
         assert_eq!(restore_target(&tree, Some(&saved), "library", "game"), Some(20));
+    }
+}
+
+#[cfg(test)]
+mod guide_return_tests {
+    use super::return_intercept_mode;
+
+    #[test]
+    fn new_controller_none_returns_to_zaman_guide_interception() {
+        assert_eq!(return_intercept_mode(0, Some(("zaman", "Idle"))), 1);
+        assert_eq!(return_intercept_mode(0, Some(("zaman", "Running"))), 1);
+        assert_eq!(return_intercept_mode(1, Some(("zaman", "Running"))), 1);
+    }
+
+    #[test]
+    fn running_native_steam_retains_guide_ownership() {
+        assert_eq!(return_intercept_mode(0, Some(("steam", "Running"))), 0);
+        assert_eq!(return_intercept_mode(1, Some(("steam", "Running"))), 0);
+    }
+
+    #[test]
+    fn non_running_steam_does_not_retain_native_guide() {
+        for phase in ["Idle", "Starting", "Stopping", "Failed", "Exited"] {
+            assert_eq!(return_intercept_mode(0, Some(("steam", phase))), 1);
+        }
+    }
+
+    #[test]
+    fn unavailable_or_unrecognized_owner_preserves_saved_mode() {
+        for saved in [0, 1] {
+            assert_eq!(return_intercept_mode(saved, None), saved);
+            assert_eq!(return_intercept_mode(saved, Some(("unknown", "Running"))), saved);
+        }
+        assert_eq!(return_intercept_mode(2, Some(("zaman", "Idle"))), 2);
     }
 }

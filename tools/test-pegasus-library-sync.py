@@ -40,6 +40,7 @@ class PegasusLibrarySyncTests(unittest.TestCase):
             "XDG_CONFIG_HOME": str(self.root / "config"),
             "XDG_DATA_HOME": str(self.root / "data"),
             "XDG_STATE_HOME": str(self.root / "state"),
+            "XDG_CACHE_HOME": str(self.root / "cache"),
         })
         env.start()
         self.addCleanup(env.stop)
@@ -131,6 +132,53 @@ class PegasusLibrarySyncTests(unittest.TestCase):
             packaged.write_bytes(png(2)[:-1])
             self.assertEqual(sync.artwork_sources(app, next(g["package_logo"] for g in sync.enabled_games() if g["id"] == app))["logo"], png(1))
             sync.reconcile()
+
+    def cache_screenshot(self, app, shots, **extra):
+        path = self.root / "cache/Kawn Electro/Dukkan/flathub-catalog.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({app: {"id": app, "screenshots": shots, **extra}}))
+        return path
+
+    def test_cached_landscape_export_without_network_and_without_logo(self):
+        app = "org.supertuxproject.SuperTux"
+        shot = "https://dl.flathub.org/media/supertux.png"
+        self.cache_screenshot(app, [{"sizes": [
+            {"src": "https://dl.flathub.org/media/thumb.png", "width": "624", "height": "351"},
+            {"src": shot, "width": 1248, "height": 702},
+            {"src": "https://dl.flathub.org/media/huge.png", "width": 3840, "height": 2160}]}])
+        self.assertEqual(sync.artwork_sources(app), {"screenshot": shot})
+        with self.flatpak(f"app/{app}/aarch64/stable\n"):
+            sync.reconcile()
+            self.assertIn("assets.screenshot: " + shot, self.metadata.read_text())
+            self.assertEqual(list((self.markers.parent / "artwork").glob("*.png")), [])
+            self.assertIn("unchanged", sync.reconcile())
+
+    def test_local_hero_overrides_cached_screenshot_and_bad_png_is_ignored(self):
+        app = "org.supertuxproject.SuperTux"
+        self.cache_screenshot(app, [{"1248x702": "https://dl.flathub.org/shot.png"}])
+        image = self.image(f"zaman/game-artwork/{app}/background.png", 8)
+        with self.flatpak(f"app/{app}/aarch64/stable\n"):
+            sync.reconcile()
+            contents = self.metadata.read_text()
+            self.assertNotIn("assets.screenshot:", contents)
+            line = next(x for x in contents.splitlines() if x.startswith("assets.background: "))
+            self.assertEqual(Path(line.split(": ", 1)[1]).read_bytes(), png(8))
+            image.write_bytes(b"broken")
+            sync.reconcile()
+            self.assertIn("assets.screenshot: https://dl.flathub.org/shot.png", self.metadata.read_text())
+
+    def test_invalid_cached_screenshots_cannot_inject_metadata(self):
+        app = "org.supertuxproject.SuperTux"
+        for url in ["http://dl.flathub.org/a", "https://evil.org/a", "https://dl.flathub.org.evil.org/a",
+                    "https://user@dl.flathub.org/a", "https://dl.flathub.org:123/a",
+                    "https://dl.flathub.org/a\nlaunch: bad", "file:///tmp/a"]:
+            self.cache_screenshot(app, [{"1248x702": url}])
+            self.assertEqual(sync.artwork_sources(app), {})
+        cache = self.cache_screenshot(app, [{"1248x702": "https://dl.flathub.org/a"}], id="wrong")
+        self.assertEqual(sync.cached_screenshot(app), "")
+        for malformed in ["{", "[]", '{"' + app + '": null}']:
+            cache.write_text(malformed)
+            self.assertEqual(sync.cached_screenshot(app), "")
 
     def test_artwork_dry_run_and_repair(self):
         app = "org.openttd.OpenTTD"

@@ -7,6 +7,7 @@ mod inputplumber;
 mod installed;
 mod menu;
 mod operations;
+mod notification;
 mod quickshell_menu;
 mod registry;
 mod session;

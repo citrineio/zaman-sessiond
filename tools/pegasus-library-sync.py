@@ -8,6 +8,7 @@ It never edits Pegasus settings, ROM metadata, or the Steam collection.
 import argparse
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import secrets
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import zlib
+from urllib.parse import urlsplit
 
 
 from zaman_catalog import enabled_games, valid_id
@@ -64,7 +66,64 @@ def png_bytes(path: Path) -> bytes | None:
     return None
 
 
-def artwork_sources(app_id: str, package_logo: str = "") -> dict[str, bytes]:
+def safe_screenshot_url(value) -> str:
+    if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
+        return ""
+    try:
+        url = urlsplit(value)
+        if (url.scheme == "https" and url.hostname in ("flathub.org", "dl.flathub.org")
+                and not url.username and not url.password and url.port in (None, 443)):
+            return value
+    except ValueError:
+        pass
+    return ""
+
+
+def cached_screenshot(app_id: str) -> str:
+    # Reuse Dukkan's existing bounded metadata cache. Sync performs no network
+    # requests; Pegasus loads the image asynchronously and falls back when offline.
+    cache = xdg_dir("XDG_CACHE_HOME", Path.home() / ".cache")
+    path = cache / "Kawn Electro/Dukkan/flathub-catalog.json"
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(8 * 1024 * 1024 + 1)
+        if len(data) > 8 * 1024 * 1024:
+            return ""
+        root = json.loads(data)
+        entry = root.get(app_id, {}) if isinstance(root, dict) else {}
+        if not isinstance(entry, dict) or entry.get("id") != app_id:
+            return ""
+        shots = entry.get("screenshots", [])
+        if not isinstance(shots, list):
+            return ""
+        for shot in shots[:24]:
+            if not isinstance(shot, dict):
+                continue
+            sizes = shot.get("sizes", [])
+            candidates = []
+            for size in sizes[:64] if isinstance(sizes, list) else []:
+                if not isinstance(size, dict):
+                    continue
+                try:
+                    width, height = int(size.get("width", 0)), int(size.get("height", 0))
+                except (ValueError, TypeError, OverflowError):
+                    continue
+                url = safe_screenshot_url(size.get("src"))
+                if url and 0 < height <= width <= 8192:
+                    candidates.append((width, url))
+            if candidates:
+                bounded = [c for c in candidates if c[0] <= 1920]
+                return max(bounded or candidates)[1]
+            for key in ("1248x702", "752x423", "624x351", "original", "source"):
+                url = safe_screenshot_url(shot.get(key))
+                if url:
+                    return url
+    except (OSError, ValueError, TypeError, RecursionError):
+        pass
+    return ""
+
+
+def artwork_sources(app_id: str, package_logo: str = "") -> dict[str, bytes | str]:
     data = xdg_dir("XDG_DATA_HOME", Path.home() / ".local/share")
     logo = png_bytes(data / "zaman/game-artwork" / app_id / "logo.png")
     if logo is None and package_logo:
@@ -75,9 +134,17 @@ def artwork_sources(app_id: str, package_logo: str = "") -> dict[str, bytes]:
                  if (image := png_bytes(icon_root / f"{size}x{size}/apps/{app_id}.png"))), None)
     # Supply common roles because Pegasus themes choose their own card asset.
     identity = logo or icon
-    if not identity:
-        return {}
-    return {"logo": identity, "boxFront": identity, "tile": identity}
+    roles = {"logo": identity, "boxFront": identity, "tile": identity} if identity else {}
+    overrides = data / "zaman/game-artwork" / app_id
+    for role in ("background", "screenshot", "banner"):
+        image = png_bytes(overrides / (role + ".png"))
+        if image:
+            roles[role] = image
+    if "background" not in roles and "screenshot" not in roles:
+        screenshot = cached_screenshot(app_id)
+        if screenshot:
+            roles["screenshot"] = screenshot
+    return roles
 
 
 def artwork_path(directory: Path, image: bytes) -> Path:
@@ -190,7 +257,7 @@ def render(ids: set[str], marker_dir: Path, artwork: dict | None = None, games=N
                       f"genre: {genre}", f"summary: {summary}",
                       f"launch: /usr/local/bin/zamanctl installed-game launch {app_id}"))
         for role, image in (artwork or {}).get(app_id, {}).items():
-            path = artwork_path(marker_dir.parent / "artwork", image)
+            path = image if isinstance(image, str) else artwork_path(marker_dir.parent / "artwork", image)
             # A newline would create a second metadata directive.
             if not any(ord(character) < 32 for character in str(path)):
                 lines.append(f"assets.{role}: {path}")
@@ -231,7 +298,7 @@ def _reconcile(metadata: Path, marker_dir: Path, ids: set[str], dry_run: bool, g
                for game in games if game["id"] in ids}
     desired = render(ids, marker_dir, artwork, games)
     artwork_dir = marker_dir.parent / "artwork"
-    images = {image for roles in artwork.values() for image in roles.values()}
+    images = {image for roles in artwork.values() for image in roles.values() if isinstance(image, bytes)}
     missing_artwork = any(png_bytes(artwork_path(artwork_dir, image)) != image for image in images)
     current = metadata.read_text(encoding="utf-8") if metadata.exists() else ""
     missing = [marker_path(marker_dir, app) for app in sorted(ids)

@@ -480,6 +480,15 @@ impl SwayController {
             Ok(())
         }).await
     }
+    pub async fn steam_client_visible(&self) -> Result<bool> {
+        if !self.enabled { return Ok(false); }
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || {
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(s.views()?.iter().any(|v| s.store_owns("steam", v) && !s.store_game("steam", v)
+                && v.focused && v.workspace == "store-steam"))
+        }).await?
+    }
     pub async fn steam_game_running(&self) -> Result<bool> {
         if !self.enabled { return Ok(false); }
         let state = self.state.clone();

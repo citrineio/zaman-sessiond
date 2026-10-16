@@ -1,9 +1,23 @@
 # zaman-sessiond
 
+Current publication: **Sprint 4 source checkpoint for the Zaman retro console**.
+The resident system menu and notification server are in
+[zaman-menu](https://github.com/citrineio/zaman-menu). This repository owns sessions,
+managed storefronts/native games, the canonical input helper, the shared game
+catalog and read-only system notification producers.
+
+See [Sprint 4 closure](docs/sprint4-closure.md),
+[notification producers](docs/notification-producers.md), and the
+[public notification API](https://github.com/citrineio/zaman-menu/blob/main/docs/notifications-api.md).
+Older SDL menu and deployment descriptions below are retained for historical
+compatibility; the current console UI is the resident Quickshell menu.
+
+
 See [Sprint 1 storefront candidate](docs/sprint1-storefronts.md) for the paired source branches and device acceptance.
 
-Current source candidate: **0.6.13** (Pegasus Native Games library sync and
-Q6A-validated in-process refresh). See [Sprint 3 Pegasus library sync](docs/sprint3-pegasus-library.md).
+Earlier versioned checkpoint: **0.6.13** (Pegasus Native Games library sync and
+Q6A-validated in-process refresh). The current publication includes the later
+Sprint 1–4 changes described above. See [Sprint 3 Pegasus library sync](docs/sprint3-pegasus-library.md).
 See [0.6.11 update and acceptance](docs/menu-bluetooth-0.6.11.md).
 See [0.6.10 deployment and acceptance](docs/menu-feedback-0.6.10.md), including
 one-command display streaming with `./tools/zaman-stream`.
@@ -63,7 +77,10 @@ The generation monotonically identifies each menu opening. A menu client reads
 an obsolete generation. A replacement standalone menu can implement this
 client without direct system-bus or controller access.
 
-## Full-screen menu client
+## Historical SDL full-screen menu client (Phase A)
+
+This section describes the earlier SDL client. The current resident Quickshell
+menu is maintained in [zaman-menu](https://github.com/citrineio/zaman-menu).
 
 `zaman-menu` is the reference standalone client for this contract. It owns the
 well-known name `com.kawnelectro.Zaman.Menu1` while healthy and stays connected
@@ -231,24 +248,42 @@ Packaging is intentionally thin: install files to their declared paths. Do not
 generate registry or policy data in Debian maintainer scripts. This keeps the
 later Buildroot integration mechanical.
 
-## Remaining work
+## Roadmap after Sprint 4
 
-- Install and validate the production user units in the kiosk login session.
-- Add suspend and shutdown through a polkit-governed power broker.
-- Add emulator lifecycle adapters before treating `ExitGame()` as production-safe;
-  the current bounded systemd stop path is validated only with synthetic games.
-- Qualify MesenCE launch, autosave, natural exit, and graceful exit as a
-  production session.
-- Add owned-key emulator configuration generation.
-- Replace path-based frontend launches with library game IDs when the Zaman
-  library service becomes authoritative.
-- Add frontend-facing progress and session-ended signals without breaking the
-  versioned interface.
+The earlier Phase A checklist is superseded. The following capabilities are
+already present; their acceptance records describe the tested device scope.
 
-## Transfer Games (0.6.6 source candidate)
+| Delivered | Record |
+| --- | --- |
+| Resident Quickshell menu and deployed user services; Sprint 4 menu accepted by the owner | [Sprint 4 closure](docs/sprint4-closure.md) |
+| Reboot and shutdown through logind, including graceful game cleanup and save preservation on the tested emulator path | [0.6.5 acceptance](docs/session-0.6.5.md) |
+| Emulator launch, Guide, normal exit and library return on the Q6A | [Sprint 1 recovery acceptance](docs/sprint1-acceptance-20261014.md) |
+| Managed Dukkan/Steam storefronts and independent curated Flatpak game sessions | [Storefronts](docs/sprint1-storefronts.md), [installed games](docs/sprint2-dukkan-games.md) |
+| Shared curated catalog, native-game export and in-process Pegasus library refresh | [Shared catalog](docs/shared-catalog.md), [Pegasus sync](docs/sprint3-pegasus-library.md) |
+| Notification producers, managed Steam reminder and Guide-return correction | [Notification producers](docs/notification-producers.md), [Sprint 4 closure](docs/sprint4-closure.md) |
+
+Follow-up candidates, without a committed delivery date:
+
+- Qualify additional emulators and define their lifecycle/configuration adapters
+  individually. The working Mesen path does not establish support for every emulator.
+- Expand native Steam/Proton compatibility and abnormal-exit, reconnect and
+  controller coverage beyond the recorded Q6A checks.
+- Design suspend/resume if added; existing reboot and shutdown are already implemented.
+- Extend Transfer Games with background operation, progress and import-result
+  notification integration. The current foreground transfer workflow remains available.
+- Evaluate stable library game IDs for emulator launches and additional public
+  progress/session-ended signals. Curated installed-game IDs already exist;
+  emulator launches still use the system ID and ROM path contract above.
+- Finish reproducible image packaging and broader hardware qualification while
+  retaining the accepted deployment and rollback paths.
+
+## Historical transfer integration (0.6.6)
 
 The library menu has Resume, Transfer Games, Reboot and Shut Down. Transfer runs in a separate fullscreen Python/QML window, while the same menu remains mapped below it. Sessiond owns readiness and input handoff. `zamanctl transfer` (or `zaman-transfer --gui`) launches from the library; it is refused during games or another foreground operation. The CLI acknowledges the reserved launch, not rendered readiness.
 
-Install the paired transfer 0.4.0 application and `dist/systemd/user/zaman-transfer-gui.service`. The unit is on-demand only; do not enable it. See `docs/deploy-0.6.6.md` for verification, backup, installation and rollback. No automatic Pegasus reload or background-transfer mode is included yet.
+Install the paired transfer 0.4.0 application and `dist/systemd/user/zaman-transfer-gui.service`. The unit is on-demand only; do not enable it. See `docs/deploy-0.6.6.md` for verification, backup, installation and rollback. That transfer checkpoint did not include automatic Pegasus reload or background
+transfer. The later native-game library refresh is documented separately in
+[Sprint 3 Pegasus sync](docs/sprint3-pegasus-library.md); it does not add background
+ROM transfer.
 
 Shared curated-game JSON, build/activation commands and rollback: [Shared catalog](docs/shared-catalog.md).

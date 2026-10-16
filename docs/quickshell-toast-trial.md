@@ -158,3 +158,15 @@ property change, so its existing timeout continues in this initial trial.
 - Input region: <https://quickshell.org/docs/v0.3.0/types/Quickshell/QsWindow/>
 - Pinned lifetime implementation: <https://github.com/quickshell-mirror/quickshell/blob/v0.3.0/src/services/notifications/notification.cpp>
 - Pinned replacement implementation: <https://github.com/quickshell-mirror/quickshell/blob/v0.3.0/src/services/notifications/server.cpp>
+
+## Sprint 4 ownership
+
+This trial is superseded by `zaman-menu/notifications/`. Its renderer and server
+are no longer duplicated here. The compatibility `tools/zaman-toasts` targets
+`zaman-notifications.service`. Historical trial observations above describe the
+old six-second, three-card prototype, not Sprint 4. The new GIO protocol owner
+handles every Notify call (including identical replacements), while Quickshell
+only renders snapshots. Real controller/network/battery producers live in
+`tools/zaman-notification-events.py`; audio events use the optional read-only
+`experiments/quickshell/AudioNotificationEvents.qml` producer loaded by the
+renderer. Unsupported/missing telemetry produces no invented battery values.

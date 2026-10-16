@@ -131,7 +131,23 @@ pub async fn run(id: String, generation: u64, command: CommandSpec, state: Store
             return Err(error);
         }
         state.update(&id, generation, "Running", String::new());
+        let native_guide = id == "steam" && state.entry(&id).is_some_and(|e| e.native_guide);
+        let shortcut_reminder = async {
+            if native_guide {
+                // Wait for an owned, focused client window, not a launch callback.
+                loop {
+                    if compositor.steam_client_visible().await.unwrap_or(false) {
+                        let key = format!("steam:{}:{generation}", std::process::id());
+                        let _ = tokio::task::spawn_blocking(move || crate::notification::steam_shortcut(key)).await;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                }
+            }
+            std::future::pending::<()>().await;
+        };
         tokio::select! {
+            _ = shortcut_reminder => unreachable!("notification reminder remains pending"),
             result = systemd.wait_for_exit(&handle) => {
                 if let Err(error) = result { systemd.stop(&handle).await?; return Err(error); }
                 Ok(())
