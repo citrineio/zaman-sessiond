@@ -1,0 +1,60 @@
+{
+  "accepted": "2026-10-19",
+  "optional_layers": {
+    "artwork-style-update": "active",
+    "row-removal-update": "active"
+  },
+  "profile": "row-removal",
+  "repositories": {
+    "menu": {
+      "docs/sprint7-closeout.md": "69f4b9e33a8f7e0fb7a066c63a94577e3d5145a207b3388c863d1f873470346a",
+      "notifications/model.py": "0430235f70f87a6d227d3569d3b45dfec0c3d01be0e188ca964810cc59dab1bf",
+      "qml/MenuIcon.qml": "a9d6499e3d05b682f1b15882353a6512442c05d09cb740f3221d8a8e49d143b3",
+      "qml/NotificationClient.qml": "4e1f8fb26a6e97670a6a0c68d523cc329db0160b1a0296eb5a82f431755ff451",
+      "qml/NotificationsPage.qml": "746bd954f842736b0d6157ec0421dadf81ebf2a06ddda282a0bae050028e9fef",
+      "qml/ScrapePage.qml": "b05293c7b7725a8c02d87e5349744f359ce9ed06ab525155154952adf7449d85",
+      "qml/TransferPage.qml": "2914997fb28a874d4fb44157c356eaf1f0963fb808527b055180aa937115dd1f",
+      "qml/shell.qml": "942b6a2879d3421cff0a92dffe30952f8bc1411e14ddb7c5c2e10b84b7e609e9",
+      "tests/menu-controller-regression.cjs": "226c37fc952641fbf3fa41479a100fed3c723ba7b7f47d1ccb00d455ecfbd18f",
+      "tests/test-entry-animation.cjs": "edc7fc5fa54c3ae047f9f6fa3d7181daec0bf225391e32b2f2b4b4226db54d14",
+      "tests/test-scrape.cjs": "f0e41d12748595b8ec2a5bd2497ad9df6a49a01e80caa991944b8fcc32532a2a",
+      "tests/test-tab-layout.cjs": "e0554ad18b3d4679231d946d19bb5b0b0b06e700408e0753d0aaba73d802ada7",
+      "tests/test-transfer.cjs": "8f638f48abfd526d5b88a2a79c055666e286c2bc76c55d58a964e4ab3a55b4c1"
+    },
+    "pegasus": {
+      "docs/sprint7-closeout.md": "69f4b9e33a8f7e0fb7a066c63a94577e3d5145a207b3388c863d1f873470346a",
+      "tests/test-rom-refresh.cjs": "ba3a994a52da04bcfcf0aa6ade3eeb9dec5dd7811661b4ced21dea5f24871401",
+      "theme.qml": "e2fbc1bb3900f91f70d4f9c23df8b6f543cd2e1e4643a75a3f2ce11a7ab41187"
+    },
+    "sessiond": {
+      "docs/sprint7-closeout.md": "69f4b9e33a8f7e0fb7a066c63a94577e3d5145a207b3388c863d1f873470346a",
+      "tools/transfer/README.md": "41a28ed11a0e833a38d4847771a425b58a55d58c4c4e5b2cdc30f096cf82f435",
+      "tools/transfer/baselines.json": "061e7cfd31231785edf2a37689c5f08813488296371f822bec31aaeee0d3f30c",
+      "tools/transfer/deploy.py": "ab68b4e2404b38f7f2761b7686fb920336dc2b987b98f136590d02d42a1978ca",
+      "tools/transfer/extra-baselines.json": "c6f3e2d0c4eddae9a78910b589a6c78c0aa33d9f031529fa96b859ad21c1298f",
+      "tools/transfer/menu-tests/menu-controller-regression.cjs": "226c37fc952641fbf3fa41479a100fed3c723ba7b7f47d1ccb00d455ecfbd18f",
+      "tools/transfer/menu-tests/test-entry-animation.cjs": "edc7fc5fa54c3ae047f9f6fa3d7181daec0bf225391e32b2f2b4b4226db54d14",
+      "tools/transfer/menu-tests/test-scrape.cjs": "f0e41d12748595b8ec2a5bd2497ad9df6a49a01e80caa991944b8fcc32532a2a",
+      "tools/transfer/menu-tests/test-tab-layout.cjs": "e0554ad18b3d4679231d946d19bb5b0b0b06e700408e0753d0aaba73d802ada7",
+      "tools/transfer/menu-tests/test-transfer.cjs": "8f638f48abfd526d5b88a2a79c055666e286c2bc76c55d58a964e4ab3a55b4c1",
+      "tools/transfer/menu/MenuIcon.qml": "a9d6499e3d05b682f1b15882353a6512442c05d09cb740f3221d8a8e49d143b3",
+      "tools/transfer/menu/NotificationsPage.qml": "746bd954f842736b0d6157ec0421dadf81ebf2a06ddda282a0bae050028e9fef",
+      "tools/transfer/menu/ScrapePage.qml": "b05293c7b7725a8c02d87e5349744f359ce9ed06ab525155154952adf7449d85",
+      "tools/transfer/menu/TransferPage.qml": "2914997fb28a874d4fb44157c356eaf1f0963fb808527b055180aa937115dd1f",
+      "tools/transfer/menu/shell.qml": "942b6a2879d3421cff0a92dffe30952f8bc1411e14ddb7c5c2e10b84b7e609e9",
+      "tools/transfer/pegasus/tests/test-rom-refresh.cjs": "ba3a994a52da04bcfcf0aa6ade3eeb9dec5dd7811661b4ced21dea5f24871401",
+      "tools/transfer/pegasus/theme.qml": "e2fbc1bb3900f91f70d4f9c23df8b6f543cd2e1e4643a75a3f2ce11a7ab41187",
+      "tools/transfer/receiver/zaman_inbox.py": "b8dee733c47feb664255ca15b259a7eba21d1a0c2502fe9e3a45693cf6a9f88f",
+      "tools/transfer/receiver/zaman_receiver.py": "2491c64b1f315a4d5d3a0779baf9fe96cb247c2786cbab52abc824f19c55a259",
+      "tools/transfer/receiver/zaman_scraper.py": "2091bdb10f142aa83e20d1b5cdff74fac4ff0f335d14734c1f1d1d12d98c920f",
+      "tools/transfer/receiver/zaman_transfer_client.py": "018a8fb37670a108e123589baa86ed881960b848440bf71ff32b2c0f3e4b5bb3",
+      "tools/transfer/tests/large_transfer.py": "eb95cdd7a3d693e0f34ebfc848cdc63580686df27a075385f39e77d5ae65f69d",
+      "tools/transfer/tests/test_deploy.py": "8c024ee84ef628ea9fc62b754b96b5412ee333f088c646982944f5bb326dff5b",
+      "tools/transfer/tests/test_scraper.py": "d46155312e23055b28cf038f5225228dfddcefcab9e76cb730a7b81ce9067b32",
+      "tools/transfer/tests/test_transfer.py": "e2891c490fc2730597b2115e7d79d595fd9070671b5bddad60ace15bf17796f1",
+      "tools/transfer/ui-tests/CMakeLists.txt": "ef3c3fc0027cc0285288be25d13d0b2e6a77c136c3bf43b818d470ee4108ffea",
+      "tools/transfer/ui-tests/transfer-ui-test.cpp": "a8562f0d413d7feee433c6976da7590b30318b2b22ed89de33632c521dfd1ef1"
+    }
+  },
+  "sprint": 7
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "key": "qml/shell.qml",
+    "before": "962338ef001bb5bf6853f2c9c5e42cdab6ffcf232645d7627ac14f1f1c49ba12",
+    "after": "e3df25837bed68b4307a39e2925a4f6abb7ec2bc70745ed47ccc89adf110f7d6"
+  },
+  {
+    "key": "qml/NotificationsPage.qml",
+    "before": "a1212ab6e531ea79c57f1ecffd84bf1eb3027dde46f445ba2d48ee2b56ebb54b",
+    "after": "7122d7587c396a087b0b2339e8177610c2847d0c3bca3893897f7f92386dc019"
+  },
+  {
+    "key": "theme.qml",
+    "before": "dd8e9cf1d3b00a7224573db9c6e526df0ea2a8e644ccac5ff2804d36abda6111",
+    "after": "e2fbc1bb3900f91f70d4f9c23df8b6f543cd2e1e4643a75a3f2ce11a7ab41187"
+  }
+]
