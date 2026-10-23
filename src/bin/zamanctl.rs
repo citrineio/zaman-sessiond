@@ -125,6 +125,10 @@ async fn main() -> Result<()> {
             let _: () = proxy.call("ToggleMenu", &()).await?;
             print_foreground_status(&read_foreground_status(&proxy).await?);
         }
+        [command, action] if command == "emulator" && action == "menu" => {
+            let _: () = proxy.call("EmulatorMenu", &()).await?;
+            println!("Requested the active emulator's native menu.");
+        }
         [command] if command == "exit-game" => {
             let _: () = proxy.call("ExitGame", &()).await?;
             wait_until_finished(&proxy, false).await?;
@@ -136,7 +140,7 @@ async fn main() -> Result<()> {
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: zamanctl library sync [--dry-run] | installed-game {launch APP|status|close} | storefront launch {dukkan|steam} | storefront {home|close} | storefront-status | status | menu {open|close|toggle} | menu-status | version | transfer | resume | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
+                "usage: zamanctl library sync [--dry-run] | installed-game {launch APP|status|close} | storefront launch {dukkan|steam} | storefront {home|close} | storefront-status | status | menu {open|close|toggle} | menu-status | version | transfer | resume | emulator menu | exit-game | reboot | stop | launch SYSTEM_ID /absolute/ROM",
             )
             .into())
         }
