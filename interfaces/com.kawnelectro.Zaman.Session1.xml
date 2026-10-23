@@ -69,6 +69,8 @@
     <method name="ToggleMenu"/>
     <method name="Resume"/>
     <method name="ExitGame"/>
+    <method name="EmulatorMenuAvailable"><arg name="available" type="b" direction="out"/></method>
+    <method name="EmulatorMenu"/>
     <method name="Shutdown"/>
     <method name="Reboot"/>
     <method name="GameState"><arg name="game_state" type="s" direction="out"/></method>

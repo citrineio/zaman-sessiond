@@ -497,6 +497,16 @@ impl SwayController {
             Ok(s.views()?.iter().any(|v| s.store_owns("steam", v) && s.store_game("steam", v)))
         }).await?
     }
+    /// A key may only be delivered to the compositor-focused supervised game cgroup.
+    pub async fn focused_game(&self) -> Result<bool> {
+        if !self.enabled { return Ok(false); }
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || {
+            let state = state.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(state.game.is_some() && state.views()?.iter().any(|v| v.focused && state.owns(v)))
+        }).await?
+    }
+
     pub async fn game_started(&self, cgroup: String) -> Result<()> {
         self.run(move |s| {
             if !cgroup.starts_with('/') || cgroup == "/" || cgroup.ends_with('/') {

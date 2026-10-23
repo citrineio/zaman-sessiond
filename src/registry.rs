@@ -50,6 +50,19 @@ struct Emulator {
     systems: Vec<String>,
     priority: i64,
     exec: EmulatorExec,
+    #[serde(default)]
+    menu: Option<EmulatorMenu>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct EmulatorMenu {
+    method: String,
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    require_focus: Option<bool>,
+    #[serde(default)]
+    hold_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -150,6 +163,22 @@ impl Registry {
             rom_path: canonical_path.to_string_lossy().into_owned(),
             command,
         })
+    }
+
+    /// This is the only source of menu bindings. Missing entries are unsupported.
+    pub fn menu_key(&self, emulator_id: &str) -> Option<&str> {
+        self.emulators.get(emulator_id)?.menu.as_ref().and_then(|menu| {
+            if menu.method == "keyboard" { menu.key.as_deref() } else { None }
+        })
+    }
+
+    /// Optional press duration; zero preserves the existing RetroArch behavior.
+    pub fn menu_hold_ms(&self, emulator_id: &str) -> u64 {
+        self.emulators.get(emulator_id)
+            .and_then(|emulator| emulator.menu.as_ref())
+            .filter(|menu| menu.method == "keyboard")
+            .and_then(|menu| menu.hold_ms)
+            .unwrap_or(0)
     }
 
     fn load_layer(&mut self, root: &Path) -> Result<()> {
@@ -330,6 +359,19 @@ fn validate_emulator(emulator: &Emulator, path: &Path) -> Result<()> {
     for system_id in &emulator.systems {
         validate_id(system_id, "emulator system ID")?;
     }
+    if let Some(menu) = &emulator.menu {
+        match menu.method.as_str() {
+            "unsupported" if menu.key.is_none() && menu.require_focus.is_none()
+                && menu.hold_ms.is_none() => {},
+            "keyboard" if matches!(menu.key.as_deref(), Some("KEY_ESC" | "KEY_F1"))
+                && menu.require_focus == Some(true)
+                && menu.hold_ms.unwrap_or(0) <= 500 => {},
+            _ => return Err(message(format!(
+                "{} has invalid emulator.menu: supported methods are unsupported or focused keyboard KEY_ESC/KEY_F1",
+                path.display()
+            ))),
+        }
+    }
     Ok(())
 }
 
@@ -498,6 +540,7 @@ mod tests {
                             env: BTreeMap::new(),
                             workdir: None,
                         },
+                        menu: None,
                     },
                 )
             })
@@ -564,5 +607,38 @@ mod tests {
 
         let error = result.expect_err("unsupported extension must be rejected");
         assert!(error.to_string().contains("extension .zip is not valid for system nes"));
+    }
+
+    #[test]
+    fn menu_bindings_are_explicit_and_validated() {
+        let mut registry = test_registry(&[20]);
+        assert_eq!(registry.menu_key("emulator-0"), None);
+        let path = std::path::Path::new("test-emulator.toml");
+        {
+            let emulator = registry.emulators.get_mut("emulator-0").unwrap();
+            emulator.menu = Some(super::EmulatorMenu {
+                method: "keyboard".into(), key: Some("KEY_ESC".into()),
+                require_focus: Some(true), hold_ms: None,
+            });
+            assert!(super::validate_emulator(emulator, path).is_ok());
+        }
+        assert_eq!(registry.menu_key("emulator-0"), Some("KEY_ESC"));
+        assert_eq!(registry.menu_hold_ms("emulator-0"), 0);
+        {
+            let emulator = registry.emulators.get_mut("emulator-0").unwrap();
+            emulator.menu.as_mut().unwrap().hold_ms = Some(120);
+            assert!(super::validate_emulator(emulator, path).is_ok());
+            emulator.menu.as_mut().unwrap().hold_ms = Some(501);
+            assert!(super::validate_emulator(emulator, path).is_err());
+            emulator.menu.as_mut().unwrap().hold_ms = Some(120);
+            emulator.menu.as_mut().unwrap().key = Some("KEY_A".into());
+            assert!(super::validate_emulator(emulator, path).is_err());
+            emulator.menu = Some(super::EmulatorMenu {
+                method: "unsupported".into(), key: None, require_focus: None,
+                hold_ms: None,
+            });
+            assert!(super::validate_emulator(emulator, path).is_ok());
+        }
+        assert_eq!(registry.menu_key("emulator-0"), None);
     }
 }

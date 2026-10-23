@@ -14,6 +14,9 @@ patches = [
   "patches/mesence/2.2.1/0001-preserve-process-for-graceful-sigint.patch",
 ]
 
+[emulator.menu]
+method = "unsupported"
+
 [emulator.exec]
 argv = [
   "/usr/lib/zaman/emulators/mesence/Mesen",

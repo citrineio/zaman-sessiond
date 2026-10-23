@@ -147,6 +147,7 @@ pub struct SessionApi {
     menu: MenuController,
     commands: mpsc::Sender<ApiCommand>,
     display: DisplayManager,
+    emulator_menu_gate: tokio::sync::Mutex<()>,
 }
 
 pub async fn publish_menu_events(
@@ -216,6 +217,7 @@ impl SessionApi {
             menu,
             commands,
             display,
+            emulator_menu_gate: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -396,6 +398,63 @@ impl SessionApi {
 
     async fn toggle_menu(&self) -> fdo::Result<()> {
         self.request_menu(MenuAction::Toggle, "manual-toggle").await
+    }
+
+    /// True only for an active, supervised emulator declaring a tested menu action.
+    #[zbus(out_args("available"))]
+    async fn emulator_menu_available(&self) -> bool {
+        let session = self.status.snapshot();
+        session.state == "Active"
+            && self.menu.storefronts.active().is_none()
+            && self.registry.menu_key(&session.emulator_id).is_some()
+    }
+
+    /// Invoke an emulator's registered menu key, never a guessed fallback.
+    /// The caller must finish the Quickshell close/input handoff first.
+    async fn emulator_menu(&self) -> fdo::Result<()> {
+        let _guard = self.emulator_menu_gate.try_lock()
+            .map_err(|_| fdo::Error::Failed("emulator menu request already running".into()))?;
+        self.require_transfer_idle()?;
+        if self.menu.storefronts.active().is_some() || self.menu.installed.busy() {
+            return Err(fdo::Error::Failed("not an active supervised emulator".into()));
+        }
+        let session = self.status.snapshot();
+        if session.state != "Active" || session.emulator_id.is_empty() {
+            return Err(fdo::Error::Failed("no active emulator".into()));
+        }
+        let key = self.registry.menu_key(&session.emulator_id)
+            .ok_or_else(|| fdo::Error::Failed(format!(
+                "emulator {} does not declare a supported menu action", session.emulator_id
+            )))?;
+        let hold_ms = self.registry.menu_hold_ms(&session.emulator_id);
+        if self.menu.snapshot().open {
+            return Err(fdo::Error::Failed("close the Zaman overlay first".into()));
+        }
+        if !self.menu.compositor.focused_game().await
+            .map_err(|e| fdo::Error::Failed(format!("Sway focus query failed: {e}")))? {
+            return Err(fdo::Error::Failed("the supervised emulator is not focused".into()));
+        }
+        let current = self.status.snapshot();
+        if current.state != session.state || current.emulator_id != session.emulator_id
+            || current.system_id != session.system_id || current.rom_path != session.rom_path {
+            return Err(fdo::Error::Failed("emulator session changed while opening its menu".into()));
+        }
+        let bus = Connection::system().await.map_err(|e| fdo::Error::Failed(e.to_string()))?;
+        let keyboard = zbus::Proxy::new(&bus, "org.shadowblip.InputPlumber",
+            "/org/shadowblip/InputPlumber/devices/target/keyboard0",
+            "org.shadowblip.Input.Keyboard").await
+            .map_err(|e| fdo::Error::Failed(e.to_string()))?;
+        // Always attempt release, even if key-down returned an ambiguous error.
+        let down: zbus::Result<()> = keyboard.call("SendKey", &(key, true)).await;
+        // ARMSX2 needs a perceptible ESC press. RetroArch defaults to zero delay.
+        if down.is_ok() && hold_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(hold_ms)).await;
+        }
+        // Always release, including if the key-down acknowledgement was ambiguous.
+        let up: zbus::Result<()> = keyboard.call("SendKey", &(key, false)).await;
+        down.map_err(|e| fdo::Error::Failed(format!("menu key-down failed: {e}")))?;
+        up.map_err(|e| fdo::Error::Failed(format!("menu key release failed: {e}")))?;
+        Ok(())
     }
 
     async fn exit_game(&self) -> fdo::Result<()> {
