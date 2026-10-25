@@ -134,7 +134,7 @@ fn step(index: usize, count: usize, forward: bool) -> usize {
 pub fn preview_state(pending: bool) -> DisplayState {
     let mode = Mode { width: 2560, height: 1440, refresh: 59951 };
     DisplayState { available: true, outputs: vec![Output {
-        name: "HDMI-A-1".into(), make: "Acer Technologies".into(), model: "XB273U V3".into(),
+        id: 1, name: "HDMI-A-1".into(), make: "Acer Technologies".into(), model: "XB273U V3".into(),
         serial: "T45213B214205".into(), active: true, current_mode: Some(mode),
         modes: vec![mode, Mode { refresh: 119998, ..mode },
             Mode { width: 1920, height: 1080, refresh: 59940 },

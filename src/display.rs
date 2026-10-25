@@ -28,6 +28,8 @@ impl Mode {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Output {
+    #[serde(default)]
+    pub id: i64,
     pub name: String,
     #[serde(default)]
     pub make: String,
@@ -66,6 +68,8 @@ pub struct DisplayState {
 trait Backend: Send + Sync {
     fn outputs(&self) -> Result<Vec<Output>>;
     fn set_mode(&self, output: &str, mode: Mode) -> Result<()>;
+    fn set_preferred(&self, output: &str) -> Result<Mode>;
+
 }
 
 struct Sway { socket: PathBuf }
@@ -100,13 +104,29 @@ impl Backend for Sway {
         Ok(outputs.into_iter().filter(|o| o.active && o.current_mode.is_some()).collect())
     }
     fn set_mode(&self, output: &str, mode: Mode) -> Result<()> {
+        self.command(output, &format!("{}x{}@{}.{:03}Hz",
+            mode.width, mode.height, mode.refresh / 1000, mode.refresh % 1000))
+    }
+    fn set_preferred(&self, output: &str) -> Result<Mode> {
+        // Sway 1.10 output_cmd_mode accepts 0x0; queue_output_config treats
+        // nonpositive dimensions as automatic and asks wlroots for preferred.
+        // This clears a previous runtime mode without guessing EDID order.
+        // Never use --custom here. Verify an advertised mode was selected.
+        self.command(output, "0x0")?;
+        let current = self.outputs()?.into_iter().find(|o| o.name == output)
+            .ok_or_else(|| "Output disconnected during preferred-mode selection".to_string())?;
+        current.current_mode.filter(|m| current.modes.contains(m))
+            .ok_or_else(|| "Sway did not select an advertised preferred mode".into())
+    }
+}
+impl Sway {
+    fn command(&self, output: &str, mode: &str) -> Result<()> {
         // Only connector identifiers returned by GET_OUTPUTS are accepted. Never
         // interpolate monitor descriptions or user-provided command fragments.
         if output.is_empty() || !output.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)) {
             return Err("invalid output connector".into());
         }
-        let command = format!("output {output} mode {}x{}@{}.{:03}Hz",
-            mode.width, mode.height, mode.refresh / 1000, mode.refresh % 1000);
+        let command = format!("output {output} mode {mode}");
         #[derive(Deserialize)]
         struct Reply { success: bool, #[serde(default)] error: String }
         let replies: Vec<Reply> = serde_json::from_slice(&self.request(0, command.as_bytes())?)
@@ -137,6 +157,8 @@ struct Controller {
     token: u64,
     error: String,
     valid_menu: Arc<dyn Fn(u64) -> bool + Send + Sync>,
+    auto_seen: Vec<Output>,
+    next_auto_check: Instant,
 }
 
 #[derive(Clone)]
@@ -154,8 +176,10 @@ impl DisplayManager {
             backend, path, preferences: vec![], pending: None,
             token: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
             error: String::new(), valid_menu: Arc::new(valid_menu),
+            auto_seen: vec![], next_auto_check: Instant::now(),
         };
         if let Err(error) = state.restore_saved() { state.error = error; }
+        if let Err(error) = state.apply_automatic() { state.error = error; }
         let manager = Self { inner: Arc::new(Mutex::new(state)) };
         let weak = Arc::downgrade(&manager.inner);
         std::thread::spawn(move || loop {
@@ -165,6 +189,13 @@ impl DisplayManager {
             if let Err(error) = state.expire() {
                 if state.error != error { eprintln!("Display rollback: {error}"); }
                 state.error = error;
+            }
+            if Instant::now() >= state.next_auto_check {
+                state.next_auto_check = Instant::now() + Duration::from_secs(2);
+                if let Err(error) = state.apply_automatic() {
+                    if state.error != error { eprintln!("Display automatic mode: {error}"); }
+                    state.error = error;
+                }
             }
         });
         manager
@@ -304,19 +335,90 @@ impl Controller {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
             Err(e) => return Err(format!("Display preferences: {e}")),
         }
-        if self.backend.is_none() { return Ok(()) }
-        let outputs = self.backend()?.outputs()?;
-        for preference in &self.preferences {
-            if let Some(output) = outputs.iter().find(|o| o.same_display(&preference.output)
-                && o.modes.contains(&preference.mode)) {
-                if output.current_mode != Some(preference.mode) {
-                    self.backend()?.set_mode(&output.name, preference.mode)?;
-                    self.verify(output, preference.mode)?;
-                }
-            }
-        }
+        // Retain manual preferences for compatibility/rollback, but the new
+        // automatic policy owns startup/reconnection instead of old choices.
         Ok(())
     }
+    fn apply_automatic(&mut self) -> Result<()> {
+        if self.backend.is_none() || self.pending.is_some() { return Ok(()) }
+        let outputs = self.backend()?.outputs()?;
+        self.auto_seen.retain(|old| outputs.iter().any(|o| o.same_display(old)));
+        let mut errors = vec![];
+        for output in outputs {
+            if output.modes.is_empty() { continue }
+            let mut signature = output.clone();
+            signature.modes.sort();
+            signature.modes.dedup();
+            if self.auto_seen.iter().any(|old|
+                old.same_display(&signature) && old.id == signature.id && old.modes == signature.modes) { continue }
+            let result = self.select_automatic(&output);
+            // One attempt per capability snapshot, including failures. Avoid
+            // repeatedly flashing a rejected mode on an otherwise stable TV.
+            self.auto_seen.retain(|old| !old.same_display(&signature));
+            self.auto_seen.push(signature);
+            if let Err(error) = result { errors.push(error); }
+        }
+        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+    }
+    fn select_automatic(&self, output: &Output) -> Result<()> {
+        let previous = output.current_mode;
+        let mut errors = vec![];
+        for mode in automatic_candidates(&output.modes) {
+            let current = self.connected_display(output)?;
+            if !current.modes.contains(&mode) { continue }
+            if current.current_mode == Some(mode) { return Ok(()) }
+            match self.backend()?.set_mode(&output.name, mode)
+                .and_then(|_| self.verify(output, mode)) {
+                Ok(()) => {
+                    eprintln!("Display automatic: {} {}", output.name, mode.label());
+                    return Ok(())
+                }
+                Err(error) => errors.push(error),
+            }
+        }
+        self.connected_display(output)?;
+        let preferred = self.backend()?.set_preferred(&output.name)
+            .and_then(|mode| self.verify(output, mode).map(|_| mode));
+        match preferred {
+            Ok(mode) => {
+                eprintln!("Display automatic: {} preferred {}", output.name, mode.label());
+                Ok(())
+            }
+            Err(error) => {
+                errors.push(error);
+                // If all automatic candidates were rejected, restore the exact
+                // starting mode only while it is still the same display.
+                if let Ok(current) = self.connected_display(output) {
+                    if let Some(mode) = previous.filter(|m| current.modes.contains(m)) {
+                        if let Err(error) = self.backend()?.set_mode(&output.name, mode)
+                            .and_then(|_| self.verify(output, mode)) {
+                            errors.push(format!("restore: {error}"));
+                        }
+                    }
+                }
+                Err(format!("{} automatic selection failed: {}", output.name, errors.join("; ")))
+            }
+        }
+    }
+    fn connected_display(&self, output: &Output) -> Result<Output> {
+        self.backend()?.outputs()?.into_iter().find(|o| o.same_display(output))
+            .ok_or_else(|| "Display disconnected or changed during automatic selection".into())
+    }
+}
+
+fn automatic_candidates(modes: &[Mode]) -> Vec<Mode> {
+    let mut candidates = vec![];
+    for (width, height) in [(1920, 1080), (1280, 720)] {
+        let mut tier: Vec<_> = modes.iter().copied().filter(|m|
+            m.width == width && m.height == height && m.refresh.abs_diff(60_000) <= 100).collect();
+        // Exact 60.000 wins, otherwise use the closest advertised 60-family
+        // timing (including 59.940). Never round or synthesize a rate.
+        tier.sort_by_key(|m| (m.refresh.abs_diff(60_000), m.refresh));
+        tier.dedup();
+        candidates.extend(tier);
+    }
+    candidates
+
 }
 fn write_preferences(path: &PathBuf, preferences: &[Preference], token: u64) -> Result<()> {
     let parent = path.parent().ok_or_else(|| "Invalid preference path".to_string())?;
@@ -346,11 +448,15 @@ mod tests {
         outputs: Mutex<Vec<Output>>,
         commands: Mutex<Vec<(String, Mode)>>,
         ignore_next: AtomicBool,
+        preferred: Mutex<Option<Mode>>,
+        preferred_calls: AtomicU64,
+        reject: Mutex<Vec<Mode>>,
     }
     impl Backend for Arc<Fake> {
         fn outputs(&self) -> Result<Vec<Output>> { Ok(self.outputs.lock().unwrap().clone()) }
         fn set_mode(&self, name: &str, mode: Mode) -> Result<()> {
             self.commands.lock().unwrap().push((name.into(), mode));
+            if self.reject.lock().unwrap().contains(&mode) { return Err("rejected".into()) }
             if !self.ignore_next.swap(false, Ordering::SeqCst) {
                 let mut outputs = self.outputs.lock().unwrap();
                 let output = outputs.iter_mut().find(|o| o.name == name)
@@ -359,17 +465,24 @@ mod tests {
             }
             Ok(())
         }
+        fn set_preferred(&self, name: &str) -> Result<Mode> {
+            self.preferred_calls.fetch_add(1, Ordering::SeqCst);
+            let mode = self.preferred.lock().unwrap().ok_or_else(|| "no preferred mode".to_string())?;
+            self.set_mode(name, mode)?;
+            Ok(mode)
+        }
     }
     fn fixture() -> (Controller, Arc<Fake>, PathBuf) {
         let fake = Arc::new(Fake::default());
-        fake.outputs.lock().unwrap().push(Output { name: "HDMI-A-1".into(),
+        fake.outputs.lock().unwrap().push(Output { id: 1, name: "HDMI-A-1".into(),
             make: "Acer".into(), model: "XB273U V3".into(), serial: "serial-A".into(),
             active: true, current_mode: Some(ORIGINAL), modes: vec![ORIGINAL, TEST_MODE] });
         let directory = std::env::temp_dir().join(format!("zaman-display-{}-{}",
             std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
         let state = Controller { backend: Some(Box::new(fake.clone())),
             path: Some(directory.join("display.json")), preferences: vec![], pending: None,
-            token: 100, error: String::new(), valid_menu: Arc::new(|g| g == 7) };
+            token: 100, error: String::new(), valid_menu: Arc::new(|g| g == 7),
+            auto_seen: vec![], next_auto_check: Instant::now() };
         (state, fake, directory)
     }
     #[test]
@@ -412,7 +525,7 @@ mod tests {
         assert!(state.pending.is_none());
     }
     #[test]
-    fn keep_persists_and_restores_only_a_matching_supported_display() {
+    fn keep_persists_but_old_choices_do_not_override_automatic_policy() {
         let (mut state, fake, directory) = fixture();
         state.preview(7, "HDMI-A-1", TEST_MODE).unwrap();
         let token = state.pending.as_ref().unwrap().token;
@@ -422,6 +535,8 @@ mod tests {
         assert_eq!(saved[0].mode, TEST_MODE);
         fake.outputs.lock().unwrap()[0].current_mode = Some(ORIGINAL);
         state.restore_saved().unwrap();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(ORIGINAL));
+        state.apply_automatic().unwrap();
         assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(TEST_MODE));
         fake.outputs.lock().unwrap()[0].serial = "another-display".into();
         fake.outputs.lock().unwrap()[0].current_mode = Some(ORIGINAL);
@@ -452,4 +567,87 @@ mod tests {
         assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(ORIGINAL));
         fs::remove_dir_all(directory).unwrap();
     }
+    const HD: Mode = Mode { width: 1280, height: 720, refresh: 60_000 };
+    const FHD: Mode = Mode { width: 1920, height: 1080, refresh: 60_000 };
+    const UHD30: Mode = Mode { width: 3840, height: 2160, refresh: 30_000 };
+    #[test]
+    fn auto_orders_resolution_then_exact_or_fractional_sixty() {
+        assert_eq!(automatic_candidates(&[UHD30, HD, TEST_MODE, FHD, ORIGINAL]),
+            vec![FHD, TEST_MODE, HD]);
+        assert!(automatic_candidates(&[UHD30, Mode { refresh: 50_000, ..FHD },
+            Mode { refresh: 120_000, ..HD }]).is_empty());
+    }
+    #[test]
+    fn auto_selects_1080_before_720_and_does_not_loop_on_its_own_changes() {
+        let (mut state, fake, _) = fixture();
+        fake.outputs.lock().unwrap()[0].modes = vec![HD, TEST_MODE, FHD];
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(FHD));
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.commands.lock().unwrap().len(), 1);
+        assert_eq!(fake.preferred_calls.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn auto_falls_back_to_720_when_1080_is_missing_or_rejected() {
+        let (mut state, fake, _) = fixture();
+        fake.outputs.lock().unwrap()[0].modes = vec![HD, ORIGINAL];
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(HD));
+        fake.outputs.lock().unwrap()[0].modes.push(FHD);
+        fake.reject.lock().unwrap().push(FHD);
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(HD));
+    }
+    #[test]
+    fn auto_asks_backend_for_preferred_not_first_or_largest_mode() {
+        let (mut state, fake, _) = fixture();
+        fake.outputs.lock().unwrap()[0].modes = vec![UHD30, ORIGINAL];
+        *fake.preferred.lock().unwrap() = Some(ORIGINAL);
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.preferred_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(ORIGINAL));
+    }
+    #[test]
+    fn auto_defers_during_preview_and_leaves_manual_changes_until_reconnect() {
+        let (mut state, fake, _) = fixture();
+        state.apply_automatic().unwrap();
+        fake.outputs.lock().unwrap()[0].current_mode = Some(ORIGINAL);
+        // An ordinary manual/current-mode change must not fight the user.
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(ORIGINAL));
+        state.preview(7, "HDMI-A-1", TEST_MODE).unwrap();
+        fake.outputs.lock().unwrap()[0].modes.push(HD);
+        let count = fake.commands.lock().unwrap().len();
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.commands.lock().unwrap().len(), count);
+        state.rollback().unwrap();
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(TEST_MODE));
+        let output = fake.outputs.lock().unwrap().remove(0);
+        state.apply_automatic().unwrap();
+        fake.outputs.lock().unwrap().push(Output { current_mode: Some(ORIGINAL), ..output });
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(TEST_MODE));
+    }
+    #[test]
+    fn auto_failed_modes_restore_previous_and_are_not_retried_continuously() {
+        let (mut state, fake, _) = fixture();
+        fake.reject.lock().unwrap().push(TEST_MODE);
+        state.apply_automatic().unwrap_err();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(ORIGINAL));
+        let count = fake.commands.lock().unwrap().len();
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.commands.lock().unwrap().len(), count);
+    }
+
+    #[test]
+    fn auto_detects_fast_reconnect_by_new_sway_output_id() {
+        let (mut state, fake, _) = fixture();
+        state.apply_automatic().unwrap();
+        fake.outputs.lock().unwrap()[0].current_mode = Some(ORIGINAL);
+        fake.outputs.lock().unwrap()[0].id = 2;
+        state.apply_automatic().unwrap();
+        assert_eq!(fake.outputs().unwrap()[0].current_mode, Some(TEST_MODE));
+    }
+
 }
