@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import ipaddress
 import os
 from pathlib import Path
 import secrets
@@ -31,6 +32,34 @@ DEFAULT_PORT = 53317
 SERVICE = "com.kawnelectro.Zaman.Session1"
 OBJECT = "/com/kawnelectro/Zaman/Session1"
 CHUNK = 1024 * 1024
+
+
+def local_interfaces():
+    """Linux IPv4 LAN interfaces, without a route, subprocess or network probe.
+
+    IFF_BROADCAST excludes point-to-point VPN links. Retain a LAN address even
+    when multicast is unavailable so manual sending remains usable.
+    """
+    interfaces = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        for index, name in socket.if_nameindex():
+            if name.startswith(("docker", "veth", "virbr", "br-")):
+                continue
+            request = struct.pack("256s", name.encode()[:15])
+            try:
+                flags = struct.unpack_from("H", fcntl.ioctl(probe, 0x8913, request), 16)[0]
+                if not flags & 0x1 or flags & 0x8 or not flags & 0x2:
+                    continue
+                address = socket.inet_ntoa(fcntl.ioctl(probe, 0x8915, request)[20:24])
+                ip = ipaddress.IPv4Address(address)
+                if ip.is_loopback or ip.is_unspecified or ip.is_multicast:
+                    continue
+                interfaces.append(dict(interface=name, index=index, address=address,
+                                       multicast=bool(flags & 0x1000)))
+            except OSError:
+                # Interface removal/address changes can race enumeration.
+                continue
+    return sorted(interfaces, key=lambda entry: (entry["index"], entry["address"]))
 
 
 class ProtocolError(Exception):
@@ -81,7 +110,7 @@ def safe_to_import():
 def notify(row):
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", "/run/user/" + str(os.getuid())))
     phase = row["phase"]
-    labels = {"complete":"Added to your library", "ready":"Game ready to add", "needs-destination":"Choose a collection",
+    labels = {"complete":"Added to your library", "ready":"Game ready to add", "needs-destination":"Choose a destination folder",
               "needs-files":"Import needs attention", "failed":"Transfer failed",
               "scrape-input":"Artwork update needs your choice", "scrape-complete":"Artwork & info updated", "scrape-failed":"Artwork update needs attention"}
     if phase not in labels:
@@ -90,7 +119,10 @@ def notify(row):
     warning=row.get("artwork_warning","") if phase in {"ready","complete"} else ""
     title = "Ready to add without artwork" if phase == "ready" and warning else labels[phase]
     body = row["name"][:160]
-    if phase == "ready":
+    if row.get("folderOnly") and phase in {"ready", "complete"}:
+        title = "Ready to transfer to folder" if phase == "ready" else "Transferred to folder"
+        body += "\nClose the menu to finish saving the file." if phase == "ready" else "\nSaved in " + row.get("destination", str(Path(row["target"]).parent))
+    elif phase == "ready":
         body += "\nClose the menu to update your library."
         if warning: body += " You can find artwork later in Artwork & Game Info."
     elif phase == "complete":
@@ -124,8 +156,14 @@ class Receiver:
         self.stopping = threading.Event()
         self.changed = threading.Event()
         self.discovery_error = ""
+        self.addresses = []
+        self.discovery_ready = False
         self.repair_metadata = True
         self.scraper = None
+        self.target_signature = None
+        self.target_error = ""
+        self.unregistered_folders = []
+        self.target_lock = threading.RLock()
 
     def info(self, announce=None):
         data = dict(alias=self.alias, version="2.2", deviceModel="Zaman",
@@ -211,6 +249,7 @@ class Receiver:
         action = msg.get("action")
         with self.lock:
             if action == "enable":
+                self.refresh_targets(force=True)
                 self.until = time.monotonic() + 900
                 self.pin = f"{secrets.randbelow(1000000):06d}"
                 self.failures.clear()
@@ -268,10 +307,16 @@ class Receiver:
                     seconds=max(0, int(self.until-time.monotonic())),
                     pin=self.pin if self.enabled() else "", alias=self.alias,
                     port=self.port, discoveryError=self.discovery_error,
+                    addresses=list(self.addresses), discoveryReady=self.discovery_ready,
+                    targetRefreshVersion=2, folderTargetsVersion=1, targetError=self.target_error,
+                    unregisteredFolders=[],
+                    folderTargets=[dict(id=sid, name=self.inbox.registry.target_names()[sid])
+                                   for sid in self.inbox.registry.folder_targets],
+                    registryRoots=[str(root) for root in self.inbox.registry.roots],
                     jobs=jobs, historyCount=self.inbox.history_count(),
                     pending=sum(j["phase"] not in TERMINAL for j in jobs),
                     scraper=self.scraper.snapshot() if self.scraper else dict(available=False,error="Scraping unavailable",folders=[],jobs=[]),
-                    systems=[dict(id=sid,name=s["name"]) for sid,s in sorted(self.inbox.registry.systems.items())])
+                    systems=[dict(id=sid,name=name) for sid,name in sorted(self.inbox.registry.target_names().items())])
 
     def signal_refresh(self):
         rows = [r for r in self.inbox.rows() if r["refresh"]]
@@ -293,7 +338,47 @@ class Receiver:
             self.inbox.update(row["id"], refresh=0)
         if scrape_refresh:self.scraper.refreshed()
 
+    def refresh_targets(self, force=False):
+        with self.target_lock:
+            self._refresh_targets(force)
+
+    def _refresh_targets(self, force):
+        """Called by the existing worker once per second, outside snapshot I/O."""
+        previous = self.inbox.registry
+        try:
+            signature = Registry.signature(previous.roots, previous.rom_root)
+            if not force and signature == self.target_signature:
+                return
+            registry = Registry(previous.roots, previous.rom_root)
+            # An editor/importer may change files during loading. Retry next tick
+            # rather than advertise a registry assembled across two versions.
+            if Registry.signature(previous.roots, previous.rom_root) != signature:
+                return
+            first = self.target_signature is None
+            self.inbox.replace_registry(registry, revalidate=first or previous.systems != registry.systems
+                                        or previous.folder_targets != registry.folder_targets)
+            if self.scraper:
+                self.scraper.scan()
+            self.target_signature = signature
+            self.target_error = ""
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            # Folder reception does not depend on a well-formed emulator registry.
+            try:
+                with self.inbox.lock:
+                    old_folders = previous.folder_targets
+                    previous.scan_folders()
+                    self.inbox.replace_registry(previous, revalidate=old_folders != previous.folder_targets)
+                if self.scraper:
+                    self.scraper.scan()
+            except OSError:
+                pass
+            message = "System definitions could not refresh. Existing ROM folders remain available."
+            if not self.target_error:
+                print("Transfer target refresh:", str(error)[:200], flush=True)
+            self.target_error = message
+
     def work_once(self, safe=safe_to_import):
+        self.refresh_targets()
         self.expire()
         rows = self.inbox.rows()
         for batch in {r["batch"] for r in rows if r["phase"] == "validating"}:
@@ -323,6 +408,8 @@ class Receiver:
         for current in self.inbox.rows():
             if current["phase"] == "complete" and (self.repair_metadata or current["refresh"] and self.theme is not None):
                 continue
+            current["folderOnly"] = bool(current["system"]) and not self.inbox.registry.can_launch(current["system"], current["name"])
+            current["destination"] = str(self.inbox.registry.rom_root / current["system"]) if current["system"] else ""
             if not (current["hidden"] and current["phase"] in TERMINAL) and current["phase"] != current["notified"] and notify(current):
                 self.inbox.update(current["id"], notified=current["phase"])
 
@@ -333,36 +420,95 @@ class Receiver:
             except Exception as error:
                 print("Transfer worker:", type(error).__name__, str(error)[:200], flush=True)
 
-    def discovery(self):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as udp:
-                udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                udp.bind(("", self.port))
-                udp.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                               socket.inet_aton(GROUP) + socket.inet_aton("0.0.0.0"))
-                udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
-                udp.settimeout(1)
-                last = 0
-                while not self.stopping.is_set():
-                    if self.enabled() and (self.changed.is_set() or time.monotonic() - last > 15):
-                        udp.sendto(json.dumps(self.info(True)).encode(), (GROUP, self.port))
-                        last = time.monotonic()
-                        self.changed.clear()
+    def discovery_session(self, interfaces):
+        """Recreate memberships when interfaces, addresses or indices change."""
+        multicast = [entry for entry in interfaces if entry["multicast"]]
+        if not multicast:
+            raise OSError("No multicast-capable LAN interface")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as udp:
+            udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            udp.bind(("", self.port))
+            joined = []
+            failures = []
+            for entry in multicast:
+                membership = (socket.inet_aton(GROUP) + socket.inet_aton(entry["address"])
+                              + struct.pack("=I", entry["index"]))
+                try:
+                    udp.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+                    joined.append(entry)
+                except OSError as error:
+                    failures.append(error)
+            if not joined:
+                raise failures[0]
+            udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            udp.settimeout(1)
+            self.discovery_ready = True
+            self.discovery_error = ""
+            last = 0
+            checked = time.monotonic()
+            retry_memberships_at = checked + 15
+
+            def announce(value):
+                payload = json.dumps(self.info(value)).encode()
+                sent = 0
+                for entry in joined:
                     try:
-                        data, address = udp.recvfrom(16385)
-                        if len(data) > 16384 or not self.enabled():
-                            continue
-                        message = json.loads(data)
-                        if message.get("announce") is True and message.get("fingerprint") != self.fingerprint:
-                            # Protocol's UDP fallback avoids outbound callback
-                            # URLs from untrusted discovery metadata.
-                            udp.sendto(json.dumps(self.info(False)).encode(), (GROUP, self.port))
-                    except socket.timeout:
+                        udp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                                       socket.inet_aton(entry["address"]))
+                        udp.sendto(payload, (GROUP, self.port))
+                        sent += 1
+                    except OSError:
                         continue
-                    except (ValueError, AttributeError):
+                if not sent:
+                    raise OSError("Discovery could not send on any LAN interface")
+
+            while not self.stopping.is_set():
+                now = time.monotonic()
+                if now - checked >= 2:
+                    current = local_interfaces()
+                    self.addresses = current
+                    if current != interfaces:
+                        return
+                    checked = now
+                    # Retry a failed membership without disrupting good interfaces.
+                    if failures and now >= retry_memberships_at:
+                        return
+                if self.enabled() and (self.changed.is_set() or now - last >= 15):
+                    announce(True)
+                    last = now
+                    self.changed.clear()
+                try:
+                    data, address = udp.recvfrom(16385)
+                    if len(data) > 16384 or not self.enabled():
                         continue
-        except OSError as error:
-            self.discovery_error = "Discovery unavailable; use manual IP: " + str(error)
+                    message = json.loads(data)
+                    if message.get("announce") is True and message.get("fingerprint") != self.fingerprint:
+                        announce(False)
+                except socket.timeout:
+                    continue
+                except (ValueError, AttributeError):
+                    continue
+
+    def discovery(self):
+        delay = 1
+        while not self.stopping.is_set():
+            self.discovery_ready = False
+            try:
+                self.addresses = local_interfaces()
+                if not self.addresses:
+                    self.discovery_error = "No LAN address yet. Connect to Wi-Fi or Ethernet; discovery retries automatically."
+                    if self.stopping.wait(2):
+                        break
+                    continue
+                self.discovery_session(self.addresses)
+                delay = 1
+            except OSError as error:
+                self.discovery_ready = False
+                self.discovery_error = "Automatic discovery unavailable; retrying. Use a LAN address below for manual sending."
+                print("Transfer discovery retry:", str(error)[:200], flush=True)
+                if self.stopping.wait(delay):
+                    break
+                delay = min(delay * 2, 8)
 
 
 class HttpServer(ThreadingHTTPServer):

@@ -32,7 +32,7 @@ Item {
         }
         if (detail.phase === "needs-files") result.push({label:"Retry validation / import",action:"retry"});
         if (detail.phase === "scraping") result.push({label:"View artwork update",action:"scrape-job"});
-        if (detail.phase === "complete") result.push({label:detail.artwork_warning ? "Find artwork & info" : "Artwork & Game Info",action:"artwork"});
+        if (detail.phase === "complete" && !detail.folderOnly) result.push({label:detail.artwork_warning ? "Find artwork & info" : "Artwork & Game Info",action:"artwork"});
         result.push({label:"Back to inbox",action:"back"});
         if (["complete","cancelled","failed","importing"].indexOf(detail.phase) < 0)
             result.push({label:detail.phase === "receiving" || detail.phase === "offered" ? "Cancel sender session…" : "Cancel import…",action:"cancel"});
@@ -59,9 +59,20 @@ Item {
     }
     onRowsChanged: sync()
     Component.onCompleted: sync()
+    function connectionHint() {
+        if (!available || !snapshot.enabled) return "";
+        var addresses = snapshot.addresses || [];
+        if (!addresses.length) return "Waiting for a LAN address. Connect to Wi-Fi or Ethernet.";
+        return "Manual sending · " + addresses.map(a => a.address + " (" + a.interface + ")").join(" · ")
+            + " · Port " + (snapshot.port || 53317) + " · Encryption on";
+    }
     function bytes(v) {
         if (v >= 1073741824) return (v / 1073741824).toFixed(2) + " GiB";
         return (v / 1048576).toFixed(1) + " MiB";
+    }
+    function targetHint() {
+        if (!available) return "";
+        return snapshot.targetError || "";
     }
     function progress(job) {
         if (job.phase === "complete") return 1;
@@ -80,6 +91,8 @@ Item {
         return ["validating","needs-scrape","scraping","importing"].indexOf(job.phase) >= 0;
     }
     function hint(job) {
+        if (job.folderOnly && job.phase === "ready") return "Close this menu to save the files in " + job.destination + ".";
+        if (job.folderOnly && job.phase === "complete") return "Files saved in " + job.destination + ".";
         if (job.phase === "needs-scrape" || job.phase === "scraping")
             return "Your game has been received. You can keep playing while we finish.";
         if (job.phase === "ready") return job.artwork_warning
@@ -96,9 +109,12 @@ Item {
     }
     function stage(job) {
         var names = {offered:"Waiting for sender",receiving:"Receiving",validating:"Validating",
-            "needs-destination":"Choose a collection","needs-files":"Needs attention",ready:"Ready to add to your library",
+            "needs-destination":"Choose a destination folder","needs-files":"Needs attention",ready:"Ready to add to your library",
             "needs-scrape":"Finding artwork & info…",scraping:"Finding artwork & info…",
             importing:"Adding to your library…",complete:"Added to your library",failed:"Failed",cancelled:"Cancelled"};
+        if (job.folderOnly && job.phase === "ready") return "Ready to transfer to folder";
+        if (job.folderOnly && job.phase === "importing") return "Saving to folder…";
+        if (job.folderOnly && job.phase === "complete") return "Transferred to folder";
         if (job.phase === "ready" && job.artwork_warning) return "Ready to add without artwork";
         return (names[job.phase] || job.phase) + (hasByteProgress(job) ? " · " + percentage(job) + " · " + bytes(job.received) + " / " + bytes(job.size) : "");
     }
@@ -184,9 +200,23 @@ Item {
             wrapMode: Text.WordWrap
         }
         MenuText {
-            visible: (page.snapshot.discoveryError || "").length > 0
+            visible: page.snapshot.enabled && (page.snapshot.addresses || []).length > 0 && (page.snapshot.discoveryError || "").length > 0
             width: parent.width; text: page.snapshot.discoveryError || ""
             font.pixelSize: page.px(15); color:"#E8C08C"; wrapMode:Text.WordWrap
+        }
+        MenuText {
+            objectName: "transferConnectionHint"
+            visible: text.length > 0
+            width: parent.width
+            text: page.connectionHint()
+            font.pixelSize: page.px(17); color: "#BBC6D3"; wrapMode: Text.WordWrap
+        }
+        MenuText {
+            objectName: "transferTargetHint"
+            visible: text.length > 0
+            width: parent.width
+            text: page.targetHint()
+            font.pixelSize: page.px(15); color: "#E8C08C"; wrapMode: Text.WordWrap
         }
         MenuText {
             visible: page.detail !== null

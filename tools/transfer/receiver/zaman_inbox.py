@@ -65,12 +65,13 @@ def sha256(path):
 class Registry:
     """Same ordered system override semantics as sessiond; never union layers."""
     def __init__(self, roots, rom_root):
+        self.roots = tuple(Path(root).resolve() for root in roots)
         self.systems = {}
         self.paths = {}
         self.collections = {}
         self.shortnames = {}
         self.rom_root = Path(rom_root).resolve(strict=True)
-        for root in roots:
+        for root in self.roots:
             for path in sorted((Path(root) / "systems.d").glob("*.toml")):
                 doc = tomllib.loads(path.read_text())
                 s = doc["system"]
@@ -79,8 +80,7 @@ class Registry:
                 if not s.get("extensions") or not s.get("name"):
                     raise ValueError("Incomplete system registry: " + str(path))
                 self.systems[s["id"]] = s
-        if not self.systems:
-            raise ValueError("System registry is empty")
+        self.scan_folders()
         for sid, system in self.systems.items():
             directory = self.rom_root / sid
             if directory.is_symlink():
@@ -112,6 +112,60 @@ class Registry:
                     raise ValueError("Collection launch ownership is unclear: " + str(meta))
             self.collections[sid] = collection or system["name"]
             self.shortnames[sid] = shortname
+
+    def scan_folders(self):
+        """Existing direct ROM directories are manual destinations, without TOML."""
+        folders = {}
+        for path in sorted(self.rom_root.iterdir()):
+            if path.name.startswith(".") or path.is_symlink() or not path.is_dir():
+                continue
+            try:
+                relative_name(path.name)
+            except ValueError:
+                continue
+            if path.resolve().parent == self.rom_root:
+                folders[path.name] = path
+        self.folder_targets = folders
+
+    def target_names(self):
+        names = {sid:system["name"] for sid,system in self.systems.items()}
+        names.update({sid:self.systems.get(sid, {}).get("name", sid) for sid in self.folder_targets})
+        return names
+
+    def can_launch(self, sid, name):
+        return sid in self.systems and sid in self.candidates(name)
+
+    def can_receive(self, sid, name):
+        path = self.folder_targets.get(sid)
+        if path is not None:
+            return path.is_dir() and not path.is_symlink() and path.resolve().parent == self.rom_root
+        return self.can_launch(sid, name)
+
+    def destination_path(self, sid):
+        return self.folder_targets[sid] if sid in self.folder_targets else self.paths[sid]
+
+    @staticmethod
+    def signature(roots, rom_root):
+        """Watch definitions, direct collection folders and collection headers.
+
+        Do not walk ROM trees or read/hash game payloads during polling.
+        Directory mtimes are excluded: importing a game is not a target change.
+        """
+        entries = []
+        for root in roots:
+            for path in sorted((Path(root) / "systems.d").glob("*.toml")):
+                info = path.stat()
+                entries.append((str(path), info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size))
+        for path in sorted(Path(rom_root).iterdir()):
+            if path.name.startswith(".") or not path.is_dir():
+                continue
+            info = path.lstat()
+            entries.append((str(path), info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)))
+            meta = path / "metadata.pegasus.txt"
+            if meta.is_file() and not path.is_symlink():
+                info = meta.stat()
+                entries.append((str(meta), info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size))
+        return tuple(entries)
 
     def candidates(self, name):
         ext = PurePosixPath(name).suffix.lower().lstrip(".")
@@ -378,13 +432,21 @@ class Inbox:
                     entries = {n for name in members if PurePosixPath(name).suffix.lower() == ".m3u" for n in refs.get(name, [])}
                     for name in entries:
                         candidates = [sid for sid in candidates if sid in self.registry.candidates(name)]
-                    if not candidates:
+                    if not candidates and not self.registry.folder_targets:
                         raise ValueError("Playlist entries have no common registry-supported system")
-                chosen = r["system"] if r["system"] in candidates else candidates[0] if len(candidates) == 1 else None
-                next_phase = ("needs-scrape" if self.require_scrape and not r["scrape_choice"] else "ready") if chosen else "needs-destination"
+                # Registered formats may still identify an automatic destination.
+                # Every existing ROM folder is also a manual choice. Never infer
+                # a system just because only one unregistered folder exists.
+                automatic = list(candidates)
+                candidates = sorted(set(candidates) | set(self.registry.folder_targets))
+                unknown_folders = set(self.registry.folder_targets) - set(self.registry.systems)
+                chosen = r["system"] if r["system"] in candidates else automatic[0] if len(automatic) == 1 and not unknown_folders else None
+                folder_only = bool(chosen) and not self.registry.can_launch(chosen, r["name"])
+                next_phase = ("needs-scrape" if self.require_scrape and not r["scrape_choice"] and not folder_only else "ready") if chosen else "needs-destination"
                 changed = self.transition(r["id"], {"validating"}, phase=next_phase,
                             candidates=json.dumps(candidates), system=chosen,
-                            evidence=evidence, manifest=json.dumps(members))
+                            evidence=evidence, manifest=json.dumps(members),
+                            scrape_choice="skip" if folder_only else r["scrape_choice"])
                 if not changed:
                     continue
                 for name, ident in members.items():
@@ -400,9 +462,26 @@ class Inbox:
     def choose(self, ident, system):
         with self.lock:
             row = self.get(ident)
-            if row["phase"] != "needs-destination" or system not in json.loads(row["candidates"]):
+            if (row["phase"] != "needs-destination" or system not in json.loads(row["candidates"])
+                    or not self.registry.can_receive(system, row["name"])):
                 raise ValueError("Destination is no longer available for this item")
-            self.update(ident, system=system, phase="needs-scrape" if self.require_scrape else "ready", error="")
+            folder_only = not self.registry.can_launch(system, row["name"])
+            self.update(ident, system=system, phase="needs-scrape" if self.require_scrape and not folder_only else "ready",
+                        scrape_choice="skip" if folder_only else row["scrape_choice"], error="")
+
+    def replace_registry(self, registry, revalidate=False):
+        """Swap one complete, validated registry; retain uploads and user choices.
+
+        Only unresolved destinations are reconsidered. Chosen/scraping/completed
+        items and companion relationships remain intact. Normal batch validation
+        repeats the ZIP/playlist checks before any new destination is accepted.
+        """
+        with self.lock:
+            self.registry = registry
+            if revalidate:
+                for row in self.rows():
+                    if row["phase"] == "needs-destination":
+                        self.transition(row["id"], {"needs-destination"}, phase="validating", error="")
 
     def skip_scrape(self, ident):
         with self.lock:
@@ -462,13 +541,13 @@ class Inbox:
                 raise ValueError("Choose scraping or import without scraping first")
             self.update(ident, phase="importing")
         sid = row["system"]
-        if sid not in self.registry.systems or sid not in self.registry.candidates(row["name"]):
-            raise ValueError("Registry changed; destination must be reviewed")
+        if not self.registry.can_receive(sid, row["name"]):
+            raise ValueError("Destination folder is no longer available; choose it again")
         members = json.loads(row["manifest"])
         records = {name: self.get(i) for name, i in members.items()}
         signature = json.dumps([(name, r["digest"]) for name, r in sorted(records.items())])
         content = hashlib.sha256(signature.encode()).hexdigest()
-        directory = self.registry.paths[sid]
+        directory = self.registry.destination_path(sid)
         directory.mkdir(mode=0o775, exist_ok=True)
         if directory.is_symlink() or directory.resolve().parent != self.registry.rom_root:
             raise ValueError("Unsafe collection path")
@@ -559,11 +638,19 @@ class Inbox:
     def _write_metadata(self):
         groups = {}
         for row in self.rows():
+            if not self.registry.can_launch(row["system"], row["name"]):
+                # A folder transfer must preserve that folder's existing launch
+                # metadata, and must not invent a sessiond emulator definition.
+                continue
             if row["system"] and row["phase"] in {"ready","importing"}:
                 groups.setdefault(row["system"], {})
             if row["phase"] == "complete" and not row["external"]:
                 groups.setdefault(row["system"], {})[(row["target"], row["name"])] = row
         for sid, games in groups.items():
+            if sid not in self.registry.systems:
+                # Keep completed games and their last published metadata when a
+                # definition is removed. Do not block unrelated imports.
+                continue
             lines = ["# Owned by Zaman Transfer; other metadata is never edited.",
                      "collection: " + self.registry.collections[sid], "shortname: " + self.registry.shortnames[sid],
                      "ignore-regex: (^|/)[.]zaman-import-[^/]+/",
@@ -600,4 +687,6 @@ class Inbox:
                     continue
             jobs.append({k:r[k] for k in ("id","batch","name","source","size","received","phase","system","evidence","error","created","scrape_job","artwork_warning")})
             jobs[-1]["candidates"] = json.loads(r["candidates"])
+            jobs[-1]["folderOnly"] = bool(r["system"]) and not self.registry.can_launch(r["system"], r["name"])
+            jobs[-1]["destination"] = str(self.registry.rom_root / r["system"]) if r["system"] else ""
         return jobs
