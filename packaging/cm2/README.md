@@ -50,6 +50,12 @@ Git history, machine inventories, service environment dumps, credentials directo
 BIOS and saves are not published. Custom source files are published as requested; source
 code should not contain credentials. See the exporter for exact filename exclusions.
 
+Discovery selects each component from its own systemd user service: MainPID first,
+then that unit's effective ExecStart/WorkingDirectory. A menu helper running from
+a different checkout is exported as a separate Rust project and built from that
+project's Cargo.toml/Cargo.lock. The presence of two active Zaman source trees
+does not force the daemon and helper to be selected from the same checkout.
+
 If discovery is ambiguous, pass the actual paths directly:
 
 ```sh

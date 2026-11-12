@@ -109,6 +109,64 @@ class PackageTools(unittest.TestCase):
                  patch.object(Path, 'readlink', side_effect=PermissionError('denied')):
                 self.assertIn(qml.resolve(), exporter.proc_paths())
 
+    def test_daemon_unit_wins_over_other_active_helper_checkout(self):
+        exporter = load('exporter_split_daemon', 'export-zaman-stack.py')
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            daemon, helper = [Path(td) / x for x in ['sprint4', 'sprint7']]
+            for root in [daemon, helper]:
+                (root / 'src').mkdir(parents=True)
+                (root / 'Cargo.toml').write_text('[package]')
+                (root / 'src/main.rs').write_text('fn main() {}')
+            record = {'stdout': 'MainPID=0\nExecStart={ path=' + str(daemon) + '/target/release/zaman-sessiond ; }\nWorkingDirectory=' + str(daemon)}
+            # An installed executable may be unreadable or outside its source tree;
+            # WorkingDirectory/ExecStart still belong to this particular unit.
+            selected = exporter.choose_root('sessiond', None, [daemon, helper], [],
+                ['Cargo.toml', 'src/main.rs'], configured_hints=exporter.unit_paths(record))
+            self.assertEqual(selected, daemon.resolve())
+            selected = exporter.choose_root('sessiond', None, [daemon, helper], [],
+                ['Cargo.toml', 'src/main.rs'], preferred_hints=[helper],
+                configured_hints=exporter.unit_paths(record))
+            self.assertEqual(selected, helper.resolve())
+
+    def test_helper_checkout_is_captured_and_built_separately(self):
+        exporter = load('exporter_split_helper', 'export-zaman-stack.py')
+        builder = load('builder_split_helper', 'build-targets.py')
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            daemon, helper = [Path(td) / x for x in ['sprint4', 'sprint7']]
+            for root in [daemon, helper]:
+                (root / 'src/bin').mkdir(parents=True)
+                (root / 'target/release').mkdir(parents=True)
+                (root / 'Cargo.toml').write_text('[package]')
+                for name in ['zaman-menu-dev-input', 'zaman-menu-dev-pair']:
+                    (root / 'src/bin' / (name + '.rs')).write_text('fn main() {}')
+                    (root / 'target/release' / name).write_text('binary fixture')
+            record = {'stdout': 'MainPID=0\nExecStart=/bin/sh /nonexistent/menu/run.sh ' + str(helper) + ' --resident'}
+            projects, selected = exporter.helper_projects(record,
+                [helper / 'target/release/zaman-menu-dev-input'], daemon)
+            self.assertEqual(len(projects), 1)
+            self.assertEqual(set(selected), {'zaman-menu-dev-input', 'zaman-menu-dev-pair'})
+            identity = next(iter(projects))
+            self.assertEqual(projects[identity]['root'], helper.resolve())
+            work = Path(td) / 'work'
+            work.mkdir()
+            (work / 'helper-builds.json').write_text(json.dumps(selected))
+            plan = builder.build_plan(work)
+            self.assertEqual(plan['core'], ['zaman-sessiond', 'zamanctl'])
+            self.assertEqual(plan['helper-projects/' + identity], ['zaman-menu-dev-input', 'zaman-menu-dev-pair'])
+
+    def test_unit_main_pid_paths_are_used(self):
+        exporter = load('exporter_main_pid', 'export-zaman-stack.py')
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            executable = Path(td) / 'zaman-sessiond'
+            executable.write_text('fixture')
+            record = {'stdout': 'MainPID=222\nActiveState=active'}
+            with patch.object(Path, 'readlink', return_value=executable), \
+                 patch.object(Path, 'read_bytes', return_value=str(executable).encode() + b'\0'):
+                self.assertIn(executable.resolve(), exporter.unit_process_paths(record))
+
 
 if __name__ == '__main__':
     unittest.main()

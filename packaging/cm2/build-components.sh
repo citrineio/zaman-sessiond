@@ -13,9 +13,5 @@ fi
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 python3 packaging/cm2/fetch-sources.py
 python3 packaging/cm2/test-package-tools.py
-cd packaging/work/core
-cargo test --locked --lib
-cargo build --release --locked --bin zaman-sessiond --bin zamanctl \
-  --bin zaman-menu-dev-input --bin zaman-menu-dev-pair
-cd ../../..
+python3 packaging/cm2/build-targets.py
 python3 packaging/cm2/build-debs.py --version "${ZAMAN_PACKAGE_VERSION:?set version}"

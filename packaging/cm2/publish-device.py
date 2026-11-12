@@ -120,6 +120,7 @@ def publish():
             public_manifest = {'format': 1, 'created_utc': manifest['created_utc'],
                                'source': 'current device sources and installed helper code',
                                'source_roots': manifest['roots'],
+                               'helper_builds': manifest.get('helper_builds', {}),
                                'active_helpers': sorted(active_helpers),
                                'files': public_files,
                                'source_omissions': [x for x in manifest['skipped'] if any(str(x.get('source','')).startswith(root + '/') for root in manifest['roots'].values())]}

@@ -36,8 +36,8 @@ for name, live_name in [('core', 'sessiond'), ('menu', 'resident-menu'), ('theme
         if not (dest / item).is_file():
             raise SystemExit(f'Missing {name} source: {item}')
 
-# The daemon checkout owns helper source in live snapshots. Never overwrite local
-# helper changes by reapplying an older menu archive during a device build.
+# Live snapshots keep the daemon and separately deployed helper projects intact.
+# Never overwrite them by reapplying an older menu archive during a device build.
 if not live.is_dir():
     for src, target in [('zaman-menu-dev-input.rs', 'src/bin/zaman-menu-dev-input.rs'),
                         ('zaman-menu-dev-pair.rs', 'src/bin/zaman-menu-dev-pair.rs'),
@@ -51,13 +51,29 @@ replacements = {'/usr/local/bin/zamanctl': '/usr/bin/zamanctl',
                 '/usr/local/libexec/zaman/': '/usr/libexec/zaman/',
                 '/usr/local/share/zaman/': '/usr/share/zaman/'}
 snapshot = root / 'packaging/device-source'
+helper_builds = {}
 if (snapshot / 'manifest.json').is_file():
     manifest = json.loads((snapshot / 'manifest.json').read_text())
     destinations = {'sessiond': '/usr/share/zaman/sessiond', 'resident-menu': '/usr/share/zaman/menu',
                     'pegasus-theme': '/usr/share/pegasus-frontend/themes/zaman'}
     for name, original in manifest.get('source_roots', {}).items():
+        if name.startswith('helper-project-'):
+            destinations[name] = '/usr/share/zaman/sessiond'
         if name in destinations:
             replacements[original] = destinations[name]
+    helper_builds = manifest.get('helper_builds', {})
+    for identity in set(helper_builds.values()):
+        if not re.fullmatch(r'[a-f0-9]{12}', identity):
+            raise SystemExit('Invalid helper project identity')
+        source = live / 'helper-projects' / identity
+        if not (source / 'Cargo.toml').is_file() or not (source / 'Cargo.lock').is_file():
+            raise SystemExit('Incomplete live helper source: ' + identity)
+        target = work / 'helper-projects' / identity
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target)
+        provenance['helper-project-' + identity] = {'source': 'live-device-snapshot', 'directory': str(source.relative_to(root))}
     for item in manifest.get('files', []):
         if item['path'].startswith('deployment/'):
             original = '/' + item['path'][len('deployment/'):]
@@ -71,7 +87,8 @@ if (snapshot / 'manifest.json').is_file():
 replacements = dict(sorted(replacements.items(), key=lambda pair: len(pair[0]), reverse=True))
 relocation_pattern = re.compile('|'.join(re.escape(key) for key in replacements))
 (work / 'relocation.json').write_text(json.dumps(replacements, indent=2) + '\n')
-for name in ['core', 'menu', 'theme']:
+(work / 'helper-builds.json').write_text(json.dumps(helper_builds, indent=2) + '\n')
+for name in ['core', 'menu', 'theme', 'helper-projects']:
     for path in (work / name).rglob('*'):
         if path.is_file() and '.git' not in path.parts and path.suffix in {'.rs', '.py', '.qml', '.js', '.sh', '.toml'}:
             content = path.read_text()

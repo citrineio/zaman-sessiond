@@ -122,24 +122,93 @@ def ancestor_candidates(paths, signature):
     return roots
 
 
-def choose_root(label, explicit, hints, fallbacks, signature, secondary_hints=()):
+def unit_properties(record):
+    return dict(line.split('=', 1) for line in record.get('stdout', '').splitlines() if '=' in line)
+
+
+def unit_paths(record):
+    props = unit_properties(record)
+    paths = []
+    for key in ['ExecStart', 'WorkingDirectory']:
+        for value in ABS_PATH.findall(props.get(key, '')):
+            hint = source_hint(value)
+            if hint is not None:
+                paths.append(hint)
+    return paths
+
+
+def unit_process_paths(record):
+    """Inspect only this unit's process, rather than every Zaman-related process."""
+    props = unit_properties(record)
+    pid = props.get('MainPID', '')
+    if not pid.isdecimal() or int(pid) == 0:
+        return []
+    proc = Path('/proc') / pid
+    paths = []
+    try:
+        executable = source_hint((proc / 'exe').readlink())
+        if executable is not None:
+            paths.append(executable)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    try:
+        for arg in (proc / 'cmdline').read_bytes().split(b'\0'):
+            hint = source_hint(os.fsdecode(arg))
+            if hint is not None:
+                paths.append(hint)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return paths
+
+
+def choose_root(label, explicit, hints, fallbacks, signature, secondary_hints=(),
+                preferred_hints=(), configured_hints=()):
     if explicit:
         supplied = Path(explicit).expanduser().absolute()
         path = source_hint(supplied)
         if path is None or not has_signature(path, signature):
             raise ValueError(f'{label}: cannot read required files {signature} in {supplied}')
         return path
-    choices = ancestor_candidates(hints, signature)
-    if not choices:
-        choices = ancestor_candidates(secondary_hints, signature)
-    if not choices:
-        choices = ancestor_candidates(fallbacks, signature)
+    choices = []
+    for layer in [preferred_hints, configured_hints, hints, secondary_hints, fallbacks]:
+        choices = ancestor_candidates(layer, signature)
+        if choices:
+            break
     if len(choices) != 1:
         flag = {'sessiond': '--sessiond-dir', 'menu': '--menu-dir',
                 'theme': '--theme-dir'}[label]
         found = ', '.join(map(str, choices)) or 'none'
         raise ValueError(f'{label}: candidates: {found}. Supply {flag} /actual/live/path')
     return choices[0]
+
+
+def helper_projects(menu_record, process_hints, sessiond):
+    """Preserve a separately deployed helper checkout, not just the daemon tree."""
+    environment = {}
+    pid = unit_properties(menu_record).get('MainPID', '')
+    if pid.isdecimal() and int(pid) > 0:
+        try:
+            for entry in (Path('/proc') / pid / 'environ').read_bytes().split(b'\0'):
+                key, separator, value = entry.partition(b'=')
+                if separator and key in {b'ZAMAN_MENU_DEV_INPUT', b'ZAMAN_MENU_DEV_PAIR'}:
+                    environment[os.fsdecode(key)] = os.fsdecode(value)
+        except (OSError, RuntimeError, ValueError):
+            pass
+    projects = {}
+    selected = {}
+    for binary, variable in [('zaman-menu-dev-input', 'ZAMAN_MENU_DEV_INPUT'),
+                             ('zaman-menu-dev-pair', 'ZAMAN_MENU_DEV_PAIR')]:
+        signature = ['Cargo.toml', 'src/bin/' + binary + '.rs']
+        env_paths = [environment[variable]] if variable in environment else []
+        live_paths = [p for p in process_hints if p.name == binary]
+        root = choose_root('sessiond', None, live_paths, [sessiond], signature,
+                           preferred_hints=env_paths, configured_hints=unit_paths(menu_record))
+        if root != sessiond:
+            identity = hashlib.sha256(str(root).encode()).hexdigest()[:12]
+            project = projects.setdefault(identity, {'root': root, 'binaries': []})
+            project['binaries'].append(binary)
+            selected[binary] = identity
+    return projects, selected
 
 
 class Snapshot:
@@ -255,7 +324,7 @@ def main():
     for unit in sorted(units):
         command = run(['systemctl', '--user', 'show', unit, '-p', 'ExecStart',
                        '-p', 'WorkingDirectory', '-p', 'FragmentPath', '-p', 'DropInPaths',
-                       '-p', 'ActiveState', '-p', 'UnitFileState'])
+                       '-p', 'ActiveState', '-p', 'UnitFileState', '-p', 'MainPID'])
         records[unit] = command
         for value in ABS_PATH.findall(command['stdout']):
             hint = source_hint(value)
@@ -265,15 +334,22 @@ def main():
     # Live processes take precedence over fallback directories. Multiple live roots
     # are intentionally an error rather than silently picking an old checkout.
     hints = process_hints
+    daemon_record = records.get('zaman-sessiond.service', {})
+    menu_record = records.get('zaman-quickshell.service', {})
     try:
         sessiond = choose_root('sessiond', args.sessiond_dir, hints,
             [home / 'projects/zaman-sprint4/zaman-sessiond', home / 'zaman-sessiond-publish'],
-            ['Cargo.toml', 'src/main.rs'], secondary_hints=service_hints)
+            ['Cargo.toml', 'src/main.rs'], secondary_hints=service_hints,
+            preferred_hints=unit_process_paths(daemon_record),
+            configured_hints=unit_paths(daemon_record))
         menu = choose_root('menu', args.menu_dir, hints,
             [home / 'zaman-quickshell-prototype'], ['run.sh', 'qml/shell.qml'],
-            secondary_hints=service_hints)
+            secondary_hints=service_hints,
+            preferred_hints=unit_process_paths(menu_record),
+            configured_hints=unit_paths(menu_record))
         theme = choose_root('theme', args.theme_dir, [],
             [home / '.config/pegasus-frontend/themes/zaman'], ['theme.qml', 'theme.cfg'])
+        extra_projects, helper_builds = helper_projects(menu_record, process_hints, sessiond)
     except ValueError as e:
         ap.error(str(e))
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
@@ -288,6 +364,8 @@ def main():
             ap.error('Output must be outside all source directories')
     for label, root in [('sessiond', sessiond), ('resident-menu', menu), ('pegasus-theme', theme)]:
         print(f'{label}: {root}', flush=True)
+    for identity, project in extra_projects.items():
+        print('helper project (' + ', '.join(project['binaries']) + '): ' + str(project['root']), flush=True)
     fd, temporary_name = tempfile.mkstemp(prefix='.zaman-export-', dir=output.parent)
     os.close(fd)
     temporary = Path(temporary_name)
@@ -301,6 +379,13 @@ def main():
                 git[label] = {key: run(['git', '-C', str(root), *cmd])
                     for key, cmd in [('head', ['rev-parse', 'HEAD']),
                                      ('status', ['status', '--porcelain=v1', '--untracked-files=all'])]}
+            for identity, project in extra_projects.items():
+                root = project['root']
+                snap.tree(root, 'sources/helper-projects/' + identity)
+                roots['helper-project-' + identity] = root
+                git['helper-project-' + identity] = {
+                    'head': run(['git', '-C', str(root), 'rev-parse', 'HEAD']),
+                    'status': run(['git', '-C', str(root), 'status', '--porcelain=v1', '--untracked-files=all'])}
             # These are narrowly scoped Zaman directories, not whole user/system configs.
             deployment = [home / '.config/sway', Path('/etc/sway'),
                 home / '.local/lib/zaman', home / '.local/libexec/zaman',
@@ -370,6 +455,7 @@ def main():
                                for k, v in records.items()}, 'git': git, 'binaries': binaries}
             snap.add_bytes('reference/inventory.json', json.dumps(inventory, indent=2).encode())
             manifest = {'format': 1, 'created_utc': stamp, 'roots': {k: str(v) for k, v in roots.items()},
+                'helper_builds': helper_builds,
                 'purpose': 'Local source and deployment evidence; NOT an installer.',
                 'files': snap.entries.copy(), 'skipped': snap.skipped, 'errors': snap.errors,
                 'excluded': ['Git object databases', 'Rust/CMake build directories', 'compiled ELF files',
