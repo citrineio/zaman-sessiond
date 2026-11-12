@@ -57,6 +57,29 @@ def redact(text):
                      for line in text.splitlines()) + '\n'
 
 
+def source_hint(path):
+    """Resolve a filesystem hint without retaining unreadable procfs magic links."""
+    try:
+        path = Path(path)
+        if not path.is_absolute() or path.parts[1:2] in {('proc',), ('sys',), ('dev',)}:
+            return None
+        resolved = path.resolve(strict=True)
+        if resolved.parts[1:2] in {('proc',), ('sys',), ('dev',)}:
+            return None
+        return resolved
+    except (OSError, RuntimeError, ValueError):
+        # Processes can exit and paths can become unreadable between discovery
+        # and probing. These are optional hints, never a reason to elevate access.
+        return None
+
+
+def has_signature(path, signature):
+    try:
+        return path.is_dir() and all((path / item).is_file() for item in signature)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def proc_paths():
     paths = []
     for proc in Path('/proc').glob('[0-9]*'):
@@ -66,11 +89,20 @@ def proc_paths():
             cmd = (proc / 'cmdline').read_bytes().split(b'\0')
             if not any(b'zaman' in x or b'quickshell' in x for x in cmd):
                 continue
-            paths.append((proc / 'exe').resolve())
+            # readlink itself can be denied even for an otherwise visible PID.
+            # Read the actual link first; non-strict Path.resolve can silently
+            # leave an unresolved /proc/PID/exe path in its result.
+            try:
+                executable = source_hint((proc / 'exe').readlink())
+                if executable is not None:
+                    paths.append(executable)
+            except (OSError, RuntimeError, ValueError):
+                pass
             for arg in cmd:
                 text = os.fsdecode(arg)
-                if text.startswith('/') and Path(text).exists():
-                    paths.append(Path(text).resolve())
+                hint = source_hint(text)
+                if hint is not None:
+                    paths.append(hint)
         except (OSError, ValueError):
             pass
     return paths
@@ -79,22 +111,27 @@ def proc_paths():
 def ancestor_candidates(paths, signature):
     roots = []
     for path in paths:
+        path = source_hint(path)
+        if path is None:
+            continue
         for parent in [path, *path.parents]:
-            if parent.is_dir() and all((parent / f).is_file() for f in signature):
-                resolved = parent.resolve()
-                if resolved not in roots:
-                    roots.append(resolved)
+            if has_signature(parent, signature):
+                if parent not in roots:
+                    roots.append(parent)
                 break
     return roots
 
 
-def choose_root(label, explicit, hints, fallbacks, signature):
+def choose_root(label, explicit, hints, fallbacks, signature, secondary_hints=()):
     if explicit:
-        path = Path(explicit).expanduser().resolve()
-        if not all((path / f).is_file() for f in signature):
-            raise ValueError(f'{label}: required files {signature} missing from {path}')
+        supplied = Path(explicit).expanduser().absolute()
+        path = source_hint(supplied)
+        if path is None or not has_signature(path, signature):
+            raise ValueError(f'{label}: cannot read required files {signature} in {supplied}')
         return path
     choices = ancestor_candidates(hints, signature)
+    if not choices:
+        choices = ancestor_candidates(secondary_hints, signature)
     if not choices:
         choices = ancestor_candidates(fallbacks, signature)
     if len(choices) != 1:
@@ -220,17 +257,21 @@ def main():
                        '-p', 'WorkingDirectory', '-p', 'FragmentPath', '-p', 'DropInPaths',
                        '-p', 'ActiveState', '-p', 'UnitFileState'])
         records[unit] = command
-        service_hints.extend(Path(p) for p in ABS_PATH.findall(command['stdout']) if Path(p).exists())
+        for value in ABS_PATH.findall(command['stdout']):
+            hint = source_hint(value)
+            if hint is not None:
+                service_hints.append(hint)
     process_hints = proc_paths()
     # Live processes take precedence over fallback directories. Multiple live roots
     # are intentionally an error rather than silently picking an old checkout.
-    hints = process_hints or service_hints
+    hints = process_hints
     try:
         sessiond = choose_root('sessiond', args.sessiond_dir, hints,
             [home / 'projects/zaman-sprint4/zaman-sessiond', home / 'zaman-sessiond-publish'],
-            ['Cargo.toml', 'src/main.rs'])
+            ['Cargo.toml', 'src/main.rs'], secondary_hints=service_hints)
         menu = choose_root('menu', args.menu_dir, hints,
-            [home / 'zaman-quickshell-prototype'], ['run.sh', 'qml/shell.qml'])
+            [home / 'zaman-quickshell-prototype'], ['run.sh', 'qml/shell.qml'],
+            secondary_hints=service_hints)
         theme = choose_root('theme', args.theme_dir, [],
             [home / '.config/pegasus-frontend/themes/zaman'], ['theme.qml', 'theme.cfg'])
     except ValueError as e:
@@ -283,9 +324,13 @@ def main():
                                    redact(cat['stdout']).encode())
                 # Capture script files referenced outside the main source roots.
                 for raw in ABS_PATH.findall(record['stdout']):
-                    p = Path(raw)
-                    if p.is_file() and (p.suffix in {'.py', '.sh', '.qml'} or 'zaman' in p.name.lower()):
-                        snap.tree(p, 'deployment/' + str(p.absolute()).lstrip('/'))
+                    p = source_hint(raw)
+                    if p is not None:
+                        try:
+                            if p.is_file() and (p.suffix in {'.py', '.sh', '.qml'} or 'zaman' in p.name.lower()):
+                                snap.tree(p, 'deployment/' + str(p.absolute()).lstrip('/'))
+                        except (OSError, RuntimeError, ValueError) as error:
+                            snap.note(p, 'unreadable optional service reference: ' + str(error))
             for directory in ['/usr/local/bin', str(home / '.local/bin'),
                 '/usr/share/dbus-1/services', '/usr/local/share/dbus-1/services',
                 '/usr/share/dbus-1/system.d', '/etc/dbus-1/system.d',
