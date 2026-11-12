@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+for executable in pegasus-fe pegasus-frontend; do
+  if command -v "$executable" >/dev/null; then
+    exec "$executable"
+  fi
+done
+echo 'Pegasus application is not installed. The menu and theme packages are available; opening a bench terminal.' >&2
+exec foot

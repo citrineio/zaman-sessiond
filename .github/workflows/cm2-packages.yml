@@ -1,0 +1,80 @@
+name: CM2 Debian packages
+on:
+  push:
+    branches: [main, 'device-build/**']
+    paths:
+      - 'packaging/cm2/**'
+      - 'packaging/device-source/**'
+      - '.github/workflows/cm2-packages.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cm2-packages-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  components:
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    timeout-minutes: 45
+    steps:
+      - name: Prepare Debian checkout tools
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Build target binaries and component packages
+        env:
+          ZAMAN_PACKAGE_VERSION: 0.1.${{ github.run_number }}
+        run: bash packaging/cm2/build-components.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cm2-components
+          path: packaging/out/*
+  runtime:
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    timeout-minutes: 180
+    steps:
+      - name: Prepare Debian checkout tools
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: /opt/zaman/runtime
+          key: cm2-bookworm-arm64-${{ hashFiles('packaging/cm2/sources.json', 'packaging/cm2/build-runtime.sh') }}
+      - name: Build private Qt and Quickshell runtime
+        env:
+          ZAMAN_PACKAGE_VERSION: 0.1.${{ github.run_number }}
+        run: bash packaging/cm2/build-runtime.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cm2-runtime
+          path: packaging/out/*.deb
+  publish:
+    needs: [components, runtime]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cm2-*
+          path: release
+          merge-multiple: true
+      - name: Prepare install files and checksums
+        run: |
+          cp packaging/cm2/install.py release/install-zaman.py
+          cp packaging/cm2/publish-device.py release/publish-device.py
+          cp packaging/cm2/export-zaman-stack.py release/export-zaman-stack.py
+          cp packaging/cm2/README.md release/INSTALL.md
+          cd release
+          sha256sum *.deb > SHA256SUMS
+      - name: Publish immutable prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "cm2-bookworm-0.1.${{ github.run_number }}" release/* \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Zaman CM2 Debian 12 packages 0.1.${{ github.run_number }}" \
+            --notes-file packaging/cm2/RELEASE-NOTES.md

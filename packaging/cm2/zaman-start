@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+if [ "$(id -u)" = 0 ]; then echo 'Start Zaman as your login user, without sudo.' >&2; exit 1; fi
+/usr/bin/zaman-session-setup
+export XDG_CURRENT_DESKTOP=sway
+export XDG_SESSION_DESKTOP=Zaman
+export XDG_SESSION_TYPE=wayland
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+  systemctl --user start dbus.socket
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+fi
+trap 'systemctl --user stop zaman-session.target' EXIT
+sway -c /etc/zaman/sway.conf "$@"

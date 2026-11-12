@@ -1,0 +1,28 @@
+#!/usr/bin/python3
+"""Install the packaged theme into a writable user tree for refresh tokens."""
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+source = Path('/usr/share/pegasus-frontend/themes/zaman')
+config = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config')))
+theme = config / 'pegasus-frontend/themes/zaman'
+marker = '.zaman-package-version'
+theme.parent.mkdir(parents=True, exist_ok=True)
+if theme.exists() and not (theme / marker).is_file():
+    raise SystemExit('Existing custom Zaman theme preserved. Move it aside before activating the packaged session.')
+if not theme.exists() or (theme / marker).read_text() != (source / marker).read_text():
+    stage = Path(tempfile.mkdtemp(prefix='.zaman-package-', dir=theme.parent))
+    shutil.copytree(source, stage, dirs_exist_ok=True)
+    if theme.exists():
+        for name in ['library-refresh', 'rom-library-refresh', 'steam-library-refresh']:
+            if (theme / name).is_dir():
+                shutil.copytree(theme / name, stage / name, dirs_exist_ok=True)
+        backup = theme.with_name('.zaman-package-previous')
+        if backup.exists():
+            shutil.rmtree(backup)
+        theme.rename(backup)
+    stage.rename(theme)
+(config / 'pegasus-frontend/metafiles').mkdir(parents=True, exist_ok=True)
+print('Zaman user theme ready:', theme)

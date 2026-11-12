@@ -17,3 +17,11 @@ backups/
 /*.tar.gz
 /.env
 /.env.*
+
+/packaging/work/
+
+/packaging/stage/
+
+/packaging/out/
+
+/packaging/runtime-src/

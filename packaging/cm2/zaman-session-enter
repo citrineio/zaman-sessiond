@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+export XDG_CURRENT_DESKTOP=sway
+if command -v swaymsg >/dev/null; then
+  ZAMAN_TOAST_OUTPUT=$(swaymsg -t get_outputs -r | python3 -c 'import json,sys; print(next((x["name"] for x in json.load(sys.stdin) if x.get("active")), ""))')
+  export ZAMAN_TOAST_OUTPUT
+fi
+systemctl --user import-environment WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP XDG_SESSION_TYPE ZAMAN_TOAST_OUTPUT
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP XDG_SESSION_TYPE ZAMAN_TOAST_OUTPUT
+systemctl --user daemon-reload
+systemctl --user start zaman-session.target

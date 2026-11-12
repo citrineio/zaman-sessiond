@@ -1,0 +1,7 @@
+{
+  "menu": {"repository": "citrineio/zaman-menu", "commit": "758535952f70939ab6ce8614fbb3d578b4cd3e36"},
+  "theme": {"repository": "citrineio/zaman-pegasus", "commit": "b3c0ccd15ddb00058da537de01f5fd28ec56a796"},
+  "qt": "6.10.2",
+  "quickshell": "v0.3.0",
+  "wayland_protocols": "1.45"
+}
