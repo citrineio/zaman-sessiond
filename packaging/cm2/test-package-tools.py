@@ -78,6 +78,7 @@ class PackageTools(unittest.TestCase):
             argv = ['export', '--sessiond-dir', str(roots[0]), '--menu-dir', str(roots[1]),
                     '--theme-dir', str(roots[2]), '--output', str(output)]
             with patch.object(exporter.sys, 'argv', argv), patch.object(Path, 'home', return_value=home), \
+                 patch.object(exporter.os, 'getuid', return_value=1000), \
                  patch.object(Path, 'iterdir', iterdir), patch.object(Path, 'read_bytes', read_bytes), \
                  patch.object(Path, 'open', open_file), patch.object(exporter, 'proc_paths', return_value=[]), \
                  patch.object(exporter, 'helper_projects', return_value=({}, {})), \
@@ -89,6 +90,16 @@ class PackageTools(unittest.TestCase):
                 manifest = next(m for m in archive.getmembers() if m.name.endswith('/manifest.json'))
                 result = json.load(archive.extractfile(manifest))
             return status, result, helper, binary
+
+    def test_real_export_rejects_root_before_inspecting_services(self):
+        exporter = load('exporter_root_guard', 'export-zaman-stack.py')
+        with patch.object(exporter.sys, 'argv', ['export']), \
+             patch.object(exporter.os, 'getuid', return_value=0), \
+             patch.object(exporter, 'run') as run, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                exporter.main()
+        self.assertEqual(error.exception.code, 2)
+        run.assert_not_called()
 
     def test_export_succeeds_with_optional_permissions_denied(self):
         status, manifest, helper, binary = self.export_permission_fixture()

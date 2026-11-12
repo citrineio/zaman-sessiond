@@ -74,6 +74,18 @@ python3 /tmp/publish-zaman.py \
 `--extra /path/to/helper` adds a required installed helper tree to the source snapshot.
 `--no-wait` returns after pushing. Build/source branches are retained for reproducibility.
 
+When a packaging fix is provided in an updated `publish-zaman-github.py`, rebuild
+an existing device snapshot on the NucBox without another SSH export:
+
+```sh
+python3 ~/Downloads/publish-zaman-github.py --resume-run RUN_ID
+```
+
+This waits for the previous run to finish, updates only generated packaging on
+the same device branch and starts a new workflow run. A completed runtime cache
+can then be reused on that branch. Custom packaging edits and advanced branch
+heads are preserved by stopping rather than overwriting them.
+
 The checked-in main build uses pinned published menu/theme commits from `sources.json`.
 It is a published-source baseline, not a claim that unpublished Q6A changes are present.
 Only running the device publisher makes those local changes available to GitHub.
