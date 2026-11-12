@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "games": [
+    {
+      "id": "org.supertuxproject.SuperTux",
+      "name": "SuperTux",
+      "genre": "Platformer",
+      "summary": "A side-scrolling adventure through icy worlds.",
+      "tag": "START HERE",
+      "enabled": true,
+      "package_logo": "share/supertux2/images/engine/menu/logo.png"
+    },
+    {
+      "id": "net.supertuxkart.SuperTuxKart",
+      "name": "SuperTuxKart",
+      "genre": "Racing",
+      "summary": "Colorful kart racing with tracks and multiplayer modes.",
+      "tag": "RACING",
+      "enabled": true,
+      "package_logo": "share/supertuxkart/data/gui/icons/logo_slim.png"
+    },
+    {
+      "id": "org.wesnoth.Wesnoth",
+      "name": "The Battle for Wesnoth",
+      "genre": "Strategy",
+      "summary": "Turn-based fantasy strategy with campaigns and multiplayer.",
+      "tag": "STRATEGY",
+      "enabled": true,
+      "package_logo": "share/wesnoth/images/misc/logo.png"
+    },
+    {
+      "id": "org.openttd.OpenTTD",
+      "name": "OpenTTD",
+      "genre": "Simulation",
+      "summary": "Build transportation networks and manage a growing business.",
+      "tag": "SIMULATION",
+      "enabled": true
+    },
+    {
+      "id": "org.opensurge2d.OpenSurge",
+      "name": "Surge Engine",
+      "genre": "Platformer",
+      "summary": "Play Surge the Rabbit, a retro platformer, and create your own games.",
+      "tag": "PLATFORMER",
+      "enabled": true
+    }
+  ]
+}

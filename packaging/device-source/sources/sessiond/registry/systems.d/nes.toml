@@ -1,0 +1,10 @@
+schema = 1
+
+[system]
+id = "nes"
+name = "Nintendo Entertainment System"
+extensions = ["nes"]
+
+[system.bios]
+required = []
+optional = []

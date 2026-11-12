@@ -1,0 +1,3 @@
+# Copy to ~/.config/zaman/storefronts.d/dukkan.toml and verify argv on your device.
+argv = ["/home/kadhem/projects/dukkan/build/dukkan"]
+native_guide = false

@@ -1,0 +1,18 @@
+[Unit]
+Description=Zaman notification history and passive toast renderer
+StartLimitIntervalSec=0
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.Notifications
+ExecStart=/bin/sh %h/zaman-quickshell-prototype/tools/start-notifications.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=15
+TimeoutStopSec=5
+UMask=0077
+StandardOutput=append:%t/zaman-notifications.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

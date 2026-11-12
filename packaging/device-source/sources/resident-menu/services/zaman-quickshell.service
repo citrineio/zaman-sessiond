@@ -1,0 +1,17 @@
+[Unit]
+Description=Zaman resident Quickshell menu
+# Sway's start-shell imports the current graphical environment. Retry until ready.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/bin/sh %h/zaman-quickshell-prototype/run.sh %h/zaman-sessiond-publish --resident
+ExecStop=/usr/bin/timeout 20s /bin/sh %h/zaman-quickshell-prototype/stop.sh %h/zaman-sessiond-publish
+Restart=on-failure
+RestartSec=2
+# Let the input helper finish restoration after the renderer closes its stdin.
+KillMode=mixed
+TimeoutStopSec=25
+
+[Install]
+WantedBy=default.target

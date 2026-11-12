@@ -1,0 +1,3 @@
+# Copy to ~/.config/zaman/storefronts.d/steam.toml and verify argv on your device.
+argv = ["/usr/bin/steam", "-gamepadui"]
+native_guide = false

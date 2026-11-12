@@ -1,0 +1,26 @@
+
+# Local build outputs and development backups
+target/
+build/
+__pycache__/
+*.pyc
+*.log
+*.qslog
+*.pre-*
+*.before-*
+*.bak
+*.orig
+backups/
+*-backups/
+/zaman-sway-source-backup-*/
+/*.tar.gz
+/.env
+/.env.*
+
+# Qt presentation tests use separate root build directories
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json

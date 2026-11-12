@@ -1,0 +1,14 @@
+#!/bin/sh
+# Compatibility entry point; all renderer/state code lives in zaman-menu.
+set -eu
+case "${1:-status}" in
+    status) exec systemctl --user status --no-pager zaman-notifications.service ;;
+    logs) exec journalctl --user -u zaman-notifications.service -n 80 --no-pager ;;
+    start)
+        if [ "$#" -gt 1 ]; then echo 'Output selection is configured in the notification service. Run Sprint 4 activation with --output.' >&2; exit 2; fi
+        exec systemctl --user start zaman-notifications.service ;;
+    stop) exec systemctl --user stop zaman-notifications.service ;;
+    demo)
+        exec /usr/bin/python3 "$HOME/.local/libexec/zaman-notifications" event --json '{"source":"Zaman demo","key":"demo:manual","title":"Demo notification","body":"Simulated event","category":"system"}' ;;
+    *) echo 'Usage: zaman-toasts [start|stop|status|logs|demo]' >&2; exit 2 ;;
+esac

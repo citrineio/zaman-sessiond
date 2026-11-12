@@ -1,0 +1,9 @@
+[Unit]
+Description=Retired SDL menu compatibility launcher for Quickshell
+Requires=zaman-quickshell.service
+After=zaman-quickshell.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/true
+RemainAfterExit=yes

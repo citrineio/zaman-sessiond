@@ -1,0 +1,1220 @@
+{
+  "format": 1,
+  "created_utc": "20261112T160019Z",
+  "source": "current device sources and installed helper code",
+  "source_roots": {
+    "sessiond": "/home/kadhem/projects/zaman-emulator-menu-sprint7/zaman-sessiond",
+    "resident-menu": "/home/kadhem/projects/zaman-emulator-menu-sprint7/zaman-menu",
+    "pegasus-theme": "/home/kadhem/.config/pegasus-frontend/themes/zaman"
+  },
+  "helper_builds": {},
+  "active_helpers": [
+    "deployment/home/kadhem/.local/libexec/zaman/sprint7-1792351708703195482/zaman_receiver.py",
+    "deployment/home/kadhem/.local/libexec/zaman/steam-integration-1792322233618435471/steam-integration.py",
+    "deployment/home/kadhem/projects/zaman-emulator-menu-sprint7/zaman-menu/run.sh",
+    "deployment/home/kadhem/projects/zaman-sprint4/zaman-sessiond/tools/zaman-notification-events.py",
+    "deployment/home/kadhem/zaman-quickshell-prototype-sprint1/shortcut/zaman-menu-shortcut.py",
+    "deployment/home/kadhem/zaman-quickshell-prototype/tools/start-notifications.sh",
+    "deployment/opt/zaman-transfer/zaman_transfer_gui.py"
+  ],
+  "files": [
+    {
+      "path": "sources/sessiond/.gitignore",
+      "sha256": "37ea9beeb38f032f2400da0433776873acd2929bed26cb822f07d6431ffa54c0"
+    },
+    {
+      "path": "sources/sessiond/CHANGELOG.md",
+      "sha256": "66622c98bbf4aaa3b59236992b470deca3ef1872f76858bf5ff0f2503d6c8457"
+    },
+    {
+      "path": "sources/sessiond/Cargo.lock",
+      "sha256": "c9a5a52defb9b7b94edf7e6d4a5ad8108b6695c07a2dd775b68f6fb573fdb610"
+    },
+    {
+      "path": "sources/sessiond/Cargo.toml",
+      "sha256": "29643b892cb9afc0efd3c8ad302d51f400a498e1b5f059e1f31f60c83f18d2a5"
+    },
+    {
+      "path": "sources/sessiond/README.md",
+      "sha256": "8af198ec672de718a8d21ebe2381cb5308b6789095855d2dc66f2f54f1611af8"
+    },
+    {
+      "path": "sources/sessiond/install-zaman-menu.sh",
+      "sha256": "198c6e407386107fd0bb25caff59c020179ec79c2312849490aeb3fae4c2a255"
+    },
+    {
+      "path": "sources/sessiond/install.sh",
+      "sha256": "b581439c80a3e6cd566daed2e8e3e6e59d7f59e0f4c5a9ce00f76e24383a510d"
+    },
+    {
+      "path": "sources/sessiond/mistakes.md",
+      "sha256": "488795dea4ff04c2235f11e4da803bf64319179cb3d942237ca1851c4dc6fa0c"
+    },
+    {
+      "path": "sources/sessiond/assets/fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf",
+      "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46"
+    },
+    {
+      "path": "sources/sessiond/assets/fonts/ibm-plex-mono/OFL.txt",
+      "sha256": "d741e57d5f865e294df801f96b7b5161a88b211df65887e4358d271c9fc5fb4f"
+    },
+    {
+      "path": "sources/sessiond/assets/fonts/saira-condensed/OFL.txt",
+      "sha256": "a3c214f6b86149890326fba5a088bbe32ae5a253237ae5e4eb4ecb54b1ebe006"
+    },
+    {
+      "path": "sources/sessiond/assets/fonts/saira-condensed/SairaCondensed-Regular.ttf",
+      "sha256": "8f26edd9f227794818b66f936037dc35bd22674b287087d5d19a93d554d9a6f6"
+    },
+    {
+      "path": "sources/sessiond/catalog/games.json",
+      "sha256": "537dee76f110ef26d645f68c68540f1debc12f2e9f38380dc840e124f2cc3581"
+    },
+    {
+      "path": "sources/sessiond/dist/dbus-1/services/com.kawnelectro.Zaman.Session1.service",
+      "sha256": "ba3275ed320746b85933d0e8ef8dbb653a56b5b0cec938171d0f6c4e2f866d10"
+    },
+    {
+      "path": "sources/sessiond/dist/libexec/zaman-inputplumber-policy",
+      "sha256": "db179082a1f9dd0b3c47c313e0732d67c7fe6a2192aedb7ca9fdcc28cc437d69"
+    },
+    {
+      "path": "sources/sessiond/dist/pegasus-theme/theme.qml",
+      "sha256": "c34403f31f70ae42c391b3337e0da66b63b9172db13322677562c6ccf812144f"
+    },
+    {
+      "path": "sources/sessiond/dist/systemd/system/inputplumber.service.d/50-zaman-management.conf",
+      "sha256": "08d030690088cd84eb7ee218ead461ba303b491ff146b9bd439401e58d2d3314"
+    },
+    {
+      "path": "sources/sessiond/dist/systemd/user/zaman-menu.service",
+      "sha256": "a4df47f1a2effa0e0b0be2c940cdf04df8bd8128626119c46a704c693dbc859c"
+    },
+    {
+      "path": "sources/sessiond/dist/systemd/user/zaman-sessiond.service",
+      "sha256": "68b65385f60870800ff1eb7c8601cffe7a4a544837eeb3f820285213bf3b07a2"
+    },
+    {
+      "path": "sources/sessiond/dist/systemd/user/zaman-transfer-gui.service",
+      "sha256": "c82669d7f9404ecb05c7f30c92495b39f5868f83ce2671ea5e51fbfd62120801"
+    },
+    {
+      "path": "sources/sessiond/docs/controller-discovery.md",
+      "sha256": "afc85e54eb8d602a473c3e849ba9e68d34195069317817db4945a750777b6cbe"
+    },
+    {
+      "path": "sources/sessiond/docs/deploy-0.6.5.md",
+      "sha256": "055f9225d8a2cd9e3f9b41d48b9d7d731ffbc08aae655787fce121dde4c7f7bf"
+    },
+    {
+      "path": "sources/sessiond/docs/deploy-0.6.6.md",
+      "sha256": "eb581872eae1460be72b746e45733b42447a22ddc6defad9ff39f17c84e53714"
+    },
+    {
+      "path": "sources/sessiond/docs/deploy-0.6.8.md",
+      "sha256": "32a58b20e9747519ed868d6e2aa238c67d4f987f322cfa01f70b23e2d6cac435"
+    },
+    {
+      "path": "sources/sessiond/docs/display-settings.md",
+      "sha256": "9376551f107e3286004ce6ea1d9305a6992e8de13a6b08896be7bed3f3a86e96"
+    },
+    {
+      "path": "sources/sessiond/docs/emulator-menu.md",
+      "sha256": "020655ab22ff95e09eff3fe3086d532b293650d9c07f3af5ab06d0a9834889ef"
+    },
+    {
+      "path": "sources/sessiond/docs/menu-bluetooth-0.6.11.md",
+      "sha256": "665fd761e75dad11250986cb1a5d1483b4ddf675fda84d61dd30a4c63e57e232"
+    },
+    {
+      "path": "sources/sessiond/docs/menu-feedback-0.6.10.md",
+      "sha256": "b49d81981e5a68be4eac6b087ae46139693c19d76a28074c81ea54d5086ddd5d"
+    },
+    {
+      "path": "sources/sessiond/docs/menu-power-0.6.12.md",
+      "sha256": "655557bd3b773bb31ab58da21c05e86b3782e5d56de013a9bebd733b2e964c5c"
+    },
+    {
+      "path": "sources/sessiond/docs/notification-producers.md",
+      "sha256": "380ed27bccdf0bb93ab12c699866f2e02e0d12f04e9948c1158817cf41463e14"
+    },
+    {
+      "path": "sources/sessiond/docs/phase-a.md",
+      "sha256": "97d7db63f3f4ee533705931ff9dcc0bcf9835ccc5faad160f2aa827944995146"
+    },
+    {
+      "path": "sources/sessiond/docs/potential-features.md",
+      "sha256": "8103149f1cd3e3c4e78965445df514554ed3beb46398abc3182807d2687b2d61"
+    },
+    {
+      "path": "sources/sessiond/docs/quickshell-toast-trial.md",
+      "sha256": "5c0857ff5992d22817c3ec14a0ca799fc4337b67504865af8772b79dd53d8380"
+    },
+    {
+      "path": "sources/sessiond/docs/release-0.6.7.md",
+      "sha256": "1d2150d48c4382ccc3ced1c6c33177099fae1eba3a506c1e83f06861fea6822b"
+    },
+    {
+      "path": "sources/sessiond/docs/session-0.6.3.md",
+      "sha256": "d16d4819e30978311eda3f5124216a16ea8665b9d7f1eeea65db7a21e25e7303"
+    },
+    {
+      "path": "sources/sessiond/docs/session-0.6.4.md",
+      "sha256": "70feb210315f4543cad8764adcb80710643438c2aa89a65486589c47954c0b0b"
+    },
+    {
+      "path": "sources/sessiond/docs/session-0.6.5.md",
+      "sha256": "8ff0d274f9aa159f237940d2f29123766b54dfe3df0197b10ac7ecbe7991fd07"
+    },
+    {
+      "path": "sources/sessiond/docs/session-0.6.6.md",
+      "sha256": "2b47b703f505889abede026a9c06cac1cde53dd2f127087dd05bd2249bc7d23f"
+    },
+    {
+      "path": "sources/sessiond/docs/session-0.6.7.md",
+      "sha256": "f6b5e545387fb5ac6dc24415631702e654fedea7aeadc3fba62636e779501087"
+    },
+    {
+      "path": "sources/sessiond/docs/session-conventions.md",
+      "sha256": "f8a6a443024c98a626c79ab48ec0ea14294caf0ade32b89bb422b29b905590ec"
+    },
+    {
+      "path": "sources/sessiond/docs/shared-catalog.md",
+      "sha256": "9cfc3a1de751e7ac046b50c89bc8c6cb7e54e9aa573890ad7e3144ca8344eb0b"
+    },
+    {
+      "path": "sources/sessiond/docs/sprint1-acceptance-20261014.md",
+      "sha256": "ce13955c15dbdd2867309f14ea572c652261106b2cf6cc3499c3f5ddb5f5a5b0"
+    },
+    {
+      "path": "sources/sessiond/docs/sprint1-storefronts.md",
+      "sha256": "0e4e844801dce8de7b706f47cb3496543f76b08e65c00ce0359291b245e00429"
+    },
+    {
+      "path": "sources/sessiond/docs/sprint2-dukkan-games.md",
+      "sha256": "64fce2fa1ceae2d730e8c6cbecfb7f44a64bb517816f4a634d6e8758cdebfb6f"
+    },
+    {
+      "path": "sources/sessiond/docs/sprint3-pegasus-library.md",
+      "sha256": "023ceb6c9a3832a7d34d61d215e79389e310eb79f2fa64aff15f3554674bce72"
+    },
+    {
+      "path": "sources/sessiond/docs/sprint4-closure.md",
+      "sha256": "f8ec72fe60c0a73f63b65f92fca648cdc32bcf29793018443ae66eb99d057cf2"
+    },
+    {
+      "path": "sources/sessiond/docs/sprint6-steam-integration.md",
+      "sha256": "d4b59bdd722cf4830c898d755c3e74c4feacb1a2410dea0bccef7dc5dd246612"
+    },
+    {
+      "path": "sources/sessiond/docs/sprint7-closeout.md",
+      "sha256": "69f4b9e33a8f7e0fb7a066c63a94577e3d5145a207b3388c863d1f873470346a"
+    },
+    {
+      "path": "sources/sessiond/docs/sprint7-source-inventory.json",
+      "sha256": "e3e4c0fae5619ebe4d8e0c8aad9b85eb75b041590240d03f9dd3651bce667c7a"
+    },
+    {
+      "path": "sources/sessiond/docs/surge-engine-catalog.md",
+      "sha256": "fca48e30bdae6355ffdab4b472a40f55aa760fdfa460b36c423cffa5f69c5753"
+    },
+    {
+      "path": "sources/sessiond/experiments/quickshell/AudioNotificationEvents.qml",
+      "sha256": "6f2fb1c94f8b7f120c746776eb257e055cc8fb8f5ba6f3c4c78f114ca6e9b1c9"
+    },
+    {
+      "path": "sources/sessiond/experiments/quickshell/zaman-toasts/README.md",
+      "sha256": "458378f16b77b95a78674a1cf7c9d4fddfd06cba5c88e82ba4af9c1e9b0a5708"
+    },
+    {
+      "path": "sources/sessiond/interfaces/com.kawnelectro.Zaman.Session1.xml",
+      "sha256": "84913df240fbd191ad0e5e7f83706bde9875ddf88bbba1a237550d1f6dc11d7a"
+    },
+    {
+      "path": "sources/sessiond/patches/mesence/2.2.1/0001-preserve-process-for-graceful-sigint.patch",
+      "sha256": "a815ae90d7be05c3bc04235bf29cca54ca2eef24a025f1fbf31746741cc60f24"
+    },
+    {
+      "path": "sources/sessiond/registry/emulators.d/mesence.toml",
+      "sha256": "cf05e1d4020c4763219b23f3310765df3e6fa9ba66ac7d9c547b09d75343ab20"
+    },
+    {
+      "path": "sources/sessiond/registry/storefronts.d/dukkan.toml.example",
+      "sha256": "04710a011b4baf99fa5605ea964c604e2da5cc61be1066a737a68ef639cabd00"
+    },
+    {
+      "path": "sources/sessiond/registry/storefronts.d/steam.toml.example",
+      "sha256": "643301377fc9d6107ce1c97a23611e57da96469cdb47a211141b2572fac9a061"
+    },
+    {
+      "path": "sources/sessiond/registry/systems.d/nes.toml",
+      "sha256": "bd57c6857b15ee15bed2a31c843f50906457bc0796506762323ef8d497974da2"
+    },
+    {
+      "path": "sources/sessiond/src/api.rs",
+      "sha256": "395e9ab2b271cf8ba43adfaed0ab88c22d90a8a9039481ccff3a61ac8fcb7130"
+    },
+    {
+      "path": "sources/sessiond/src/api.rs.pre-hold120",
+      "sha256": "b42b6082f0d11e92d840931c2894b7d3ace36ba94829a4bb69a89cb5e8f92308"
+    },
+    {
+      "path": "sources/sessiond/src/catalog.rs",
+      "sha256": "30a78a594581969d8f65ec7c6a4bdcfc5b2560b4db0ca8969705f9a2877f60d5"
+    },
+    {
+      "path": "sources/sessiond/src/command.rs",
+      "sha256": "fc6d700ad9f8f5ee096d3f3de1f9bda840d93e750172d5c65bc5ad7706325a97"
+    },
+    {
+      "path": "sources/sessiond/src/contract.rs",
+      "sha256": "09eb052a89db18aac42e5c6e5565fe6813f3d352532d75b95d365fc500b1b16a"
+    },
+    {
+      "path": "sources/sessiond/src/daemon.rs",
+      "sha256": "5da161e0dd4b4408770635e97315f56b81343bab801fec2a2299f94440933b65"
+    },
+    {
+      "path": "sources/sessiond/src/display.rs",
+      "sha256": "8632e5899966b115b094c9f9172fdfa99edc2efee6cddf4ebab58429522f02ef"
+    },
+    {
+      "path": "sources/sessiond/src/error.rs",
+      "sha256": "a38af00a4c6f3900bbe76ce72c9ac872f7df8f57082087784f7cf52603a99be1"
+    },
+    {
+      "path": "sources/sessiond/src/guide.rs",
+      "sha256": "b656846a0a3382823c0d9d04aca30390af4bf24bf1336d9aaa80b9842b406952"
+    },
+    {
+      "path": "sources/sessiond/src/inputplumber.rs",
+      "sha256": "be0877f66b4dc4cc35b0c21a1daf1629f07406fdb0c7ded9187624232b3308e5"
+    },
+    {
+      "path": "sources/sessiond/src/installed.rs",
+      "sha256": "6a2f28ca57f17398072e4946631e7462bade3b4a5c15e1f04cb7a1b28029787c"
+    },
+    {
+      "path": "sources/sessiond/src/lib.rs",
+      "sha256": "70dd9a070944c172fe2e62ff992c26f76abc51ba11863e9086cc0bb4c57a8431"
+    },
+    {
+      "path": "sources/sessiond/src/main.rs",
+      "sha256": "f92a0e9382ff7776a48ce0cabddd2b56f275e94e31e22de6ad1f1f4bf6f1f643"
+    },
+    {
+      "path": "sources/sessiond/src/menu.rs",
+      "sha256": "610b86310833a5380a7ce5b30498246431beb4727be5a1bab58a13f15d561145"
+    },
+    {
+      "path": "sources/sessiond/src/notification.rs",
+      "sha256": "6a01462721233218adcb86a17a20903deb7656548a7824f743c1f0d0e850d780"
+    },
+    {
+      "path": "sources/sessiond/src/operations.rs",
+      "sha256": "8ccb63a7bbd3225766606880a3e65fc1ed7fab14a2ed99f614be33aa0c7c04a2"
+    },
+    {
+      "path": "sources/sessiond/src/quickshell_menu.rs",
+      "sha256": "d0c084190f243da0b64343e77891dc51e9721e5d70429c7b02b4db5f8f5f9536"
+    },
+    {
+      "path": "sources/sessiond/src/registry.rs",
+      "sha256": "639dc337d6d15c4d24c84846243d33d2601b9f20a11d70e9b31b2c2c03646941"
+    },
+    {
+      "path": "sources/sessiond/src/registry.rs.pre-hold120",
+      "sha256": "5e0b7356649065960e5961708db5fe2cb93ae96c74c524891624eb596b24197a"
+    },
+    {
+      "path": "sources/sessiond/src/session.rs",
+      "sha256": "fd64bab8fb9120db5d8a683ab4533db0a3597161b2640a7ce8bc7583d8ee254d"
+    },
+    {
+      "path": "sources/sessiond/src/storefront.rs",
+      "sha256": "b4bc1cca4588f818d54a130ad888d9eff682d0b9ab9176cef78c58586cfc91e4"
+    },
+    {
+      "path": "sources/sessiond/src/sway.rs",
+      "sha256": "d35c50970a96618d4cf2510cea55413746b274a5a506f86cb0e9d5c94e6f7041"
+    },
+    {
+      "path": "sources/sessiond/src/systemd.rs",
+      "sha256": "e505b1bb0c83e0f325b44ccf8f4f1143dbf5a569f93527f80c04aac8d2b89476"
+    },
+    {
+      "path": "sources/sessiond/src/transfer.rs",
+      "sha256": "f5516bed4f3e7615d15e225bbea8d604a7313a5c85513d6e7811bf7cbfaf27b2"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu-dev-input.rs",
+      "sha256": "4c1430ec605fc51b01599efb96c093b93224a4a489ba9977e4d60cd374824313"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu-dev-pair.rs",
+      "sha256": "f3964269a3e0c583058434cb0f1a1a24f39fab1f6b68802fab5a2e1f827c794c"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu.rs",
+      "sha256": "6a396f32757a13eaf57f3366854019369d9bb5721a9131c923d7f1a7b3e71db2"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zamanctl.rs",
+      "sha256": "c14c05b84b6c0dea0ba5eea68e8028965265af468ad8085e67670c2d353c4331"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu/audio.rs",
+      "sha256": "74ed7d0525a71554e0093238d11770c4fa23e45484ad26f2cba686fdd26e6af2"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu/bluetooth.rs",
+      "sha256": "1861863be6ac514b46a44b93604c7fa2887e9b07d242e306dc4e7c1a54d15ec8"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu/display.rs",
+      "sha256": "b0dc45492f84aabe73f1ab4ef9bbfaf9cc40c49bbabe97332e58a5dc1bca39a9"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu/network.rs",
+      "sha256": "eb4b8277e4bc7756b9c41ebfef1986334791f29ce6e22032ef064cb8b0ab80dd"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu-dev/display.rs",
+      "sha256": "24c1ab5d2d4d4dd0073c08067ee890242feb4087f2bff563cfa304f6078bffa0"
+    },
+    {
+      "path": "sources/sessiond/src/bin/zaman-menu-dev/display_bridge.rs",
+      "sha256": "1bdf0051729af464593b9acc685e09f1f740080c79f11fc9b62e98ea7d0cd721"
+    },
+    {
+      "path": "sources/sessiond/tests/test-notification-events.py",
+      "sha256": "d4a61bc2208b999762f85c9076b56e617cb489d870c83fdce231dadb24ae882c"
+    },
+    {
+      "path": "sources/sessiond/tools/activate-shared-catalog.sh",
+      "sha256": "9ca6540ea43448c84ec283e14d6bf0d40af741af572013090ee6bc2784c9f139"
+    },
+    {
+      "path": "sources/sessiond/tools/activate-surge-catalog.sh",
+      "sha256": "0c301b771ae238fe7c4bbfb3b2c20815128fcc3cd7d34e96413827bf27bb321a"
+    },
+    {
+      "path": "sources/sessiond/tools/build-mesence-2.2.1.sh",
+      "sha256": "b409f4b669cbb33d6ea3c0f31f1651972d6d63d9a4866accdbbcd301aa1c3fdc"
+    },
+    {
+      "path": "sources/sessiond/tools/checkpoint-sprint1.py",
+      "sha256": "759bc13239be1ed8e2c3f528a3a88c1f1b6eb96a8b4aa47ca370edb10081ecaa"
+    },
+    {
+      "path": "sources/sessiond/tools/flatpak-game-session.py",
+      "sha256": "8e107210d8977245fb8b30543f5f3c10a71a5c8ebbf30457814ead3824cd700b"
+    },
+    {
+      "path": "sources/sessiond/tools/guide-validation.sh",
+      "sha256": "d0907a339c28d45897805b7b4597cccd3fe87f07db5935a802c521434560471e"
+    },
+    {
+      "path": "sources/sessiond/tools/pegasus-library-sync.py",
+      "sha256": "b6a24a947b75d73b6d39f8c727269d98435b8d48502a0a7b2d04bc13490a1530"
+    },
+    {
+      "path": "sources/sessiond/tools/smoke-test.sh",
+      "sha256": "40e3ae637d53f01a9ebe29443b36d12d87a0029aef995941ff96dbe8e6373443"
+    },
+    {
+      "path": "sources/sessiond/tools/sprint1-checkpoint.json",
+      "sha256": "1da0e57b100d5bb7da9d95a598b07b159f9dccabe7e72da1ddcccd8b46350ff5"
+    },
+    {
+      "path": "sources/sessiond/tools/steam-integration.py",
+      "sha256": "5ae0ca6e46cecdb3b0f4a40d7b7abead622f74aab3480464b13fa8f282515755"
+    },
+    {
+      "path": "sources/sessiond/tools/test-flatpak-game-session.py",
+      "sha256": "239c00fb4bf4240b06a0e56f8f9909768a0b5cbdb3e09a41d64362cb23d6a864"
+    },
+    {
+      "path": "sources/sessiond/tools/test-pegasus-library-sync.py",
+      "sha256": "4bac7bbce055eecca45a7716588eefb25f28de18048387f1325c62978735afb8"
+    },
+    {
+      "path": "sources/sessiond/tools/test-shared-catalog-activation.py",
+      "sha256": "ef7a4b7009ad4d517d399e3fd52d5653875781fb38923911be0abb9c8549608f"
+    },
+    {
+      "path": "sources/sessiond/tools/test-sprint1-checkpoint.py",
+      "sha256": "cd284596f1be3ab04db1f04c724a6a9b215e8e4c7c190b850c99d73a71256e92"
+    },
+    {
+      "path": "sources/sessiond/tools/test-steam-evidence.py",
+      "sha256": "1891e55282423bd34f236e5a4f6e9b4675e425631929c3f28e11b26e106ca7e2"
+    },
+    {
+      "path": "sources/sessiond/tools/test-steam-launch.py",
+      "sha256": "3ac6351cfa4946a088f5a6daf546308bcf7576b5d15a4c2321c198203a18a73f"
+    },
+    {
+      "path": "sources/sessiond/tools/test-steam-library.py",
+      "sha256": "f55caa3845c37634627a58ea5747f9872b70b4f9d28fb41e589d9960e9c7cf52"
+    },
+    {
+      "path": "sources/sessiond/tools/test-zaman-catalog.py",
+      "sha256": "ba5bc79709b3652fc6eba7a6faa96aba34ceee5afd41c5170a38e4065aa19cb7"
+    },
+    {
+      "path": "sources/sessiond/tools/zaman-notification-events.py",
+      "sha256": "733efffacffd33b3878379aac9191e7e25232f58be214f95c7e75a8366120eb4"
+    },
+    {
+      "path": "sources/sessiond/tools/zaman-steam",
+      "sha256": "f383e4d0d9a6e6fedadf03b004931b1bfdb0595337317159dfe23c5ea1d88c24"
+    },
+    {
+      "path": "sources/sessiond/tools/zaman-stream",
+      "sha256": "32b6ff03fd43e090de24864fe62f3d24aacbf70060ee44641b5cf9efdc8ba6a8"
+    },
+    {
+      "path": "sources/sessiond/tools/zaman-toasts",
+      "sha256": "82f84873ffd36075d3b91d80f00beb8d6f0f2b318184ecf570840cb79286a813"
+    },
+    {
+      "path": "sources/sessiond/tools/zaman_catalog.py",
+      "sha256": "4da01672a5f3e9dd2008f5d4658b19a4410255f0c4c4cadc8ff76cf3d57305cd"
+    },
+    {
+      "path": "sources/sessiond/tools/zaman_steam_library.py",
+      "sha256": "0dbb37f51e71fe8b7939f89bac378723729648a230f57ec142e214e0082727e1"
+    },
+    {
+      "path": "sources/sessiond/tools/zaman_steam_session.py",
+      "sha256": "d0a1c4152644820fcfed912cc7791ee2264185e249afea48c6f7404f28fbe2b6"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/README.md",
+      "sha256": "41a28ed11a0e833a38d4847771a425b58a55d58c4c4e5b2cdc30f096cf82f435"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/baselines.json",
+      "sha256": "061e7cfd31231785edf2a37689c5f08813488296371f822bec31aaeee0d3f30c"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/deploy.py",
+      "sha256": "ab68b4e2404b38f7f2761b7686fb920336dc2b987b98f136590d02d42a1978ca"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/extra-baselines.json",
+      "sha256": "c6f3e2d0c4eddae9a78910b589a6c78c0aa33d9f031529fa96b859ad21c1298f"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu/MenuIcon.qml",
+      "sha256": "a9d6499e3d05b682f1b15882353a6512442c05d09cb740f3221d8a8e49d143b3"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu/NotificationsPage.qml",
+      "sha256": "746bd954f842736b0d6157ec0421dadf81ebf2a06ddda282a0bae050028e9fef"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu/ScrapePage.qml",
+      "sha256": "b05293c7b7725a8c02d87e5349744f359ce9ed06ab525155154952adf7449d85"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu/TransferPage.qml",
+      "sha256": "391f6e3f043441e54499046c1d45d724b367b8ffcc86b08fe8ad775bc0f51546"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu/shell.qml",
+      "sha256": "942b6a2879d3421cff0a92dffe30952f8bc1411e14ddb7c5c2e10b84b7e609e9"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu-tests/menu-controller-regression.cjs",
+      "sha256": "226c37fc952641fbf3fa41479a100fed3c723ba7b7f47d1ccb00d455ecfbd18f"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu-tests/test-entry-animation.cjs",
+      "sha256": "edc7fc5fa54c3ae047f9f6fa3d7181daec0bf225391e32b2f2b4b4226db54d14"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu-tests/test-scrape.cjs",
+      "sha256": "f0e41d12748595b8ec2a5bd2497ad9df6a49a01e80caa991944b8fcc32532a2a"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu-tests/test-tab-layout.cjs",
+      "sha256": "e0554ad18b3d4679231d946d19bb5b0b0b06e700408e0753d0aaba73d802ada7"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/menu-tests/test-transfer.cjs",
+      "sha256": "8f638f48abfd526d5b88a2a79c055666e286c2bc76c55d58a964e4ab3a55b4c1"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/pegasus/theme.qml",
+      "sha256": "e2fbc1bb3900f91f70d4f9c23df8b6f543cd2e1e4643a75a3f2ce11a7ab41187"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/pegasus/tests/test-rom-refresh.cjs",
+      "sha256": "ba3a994a52da04bcfcf0aa6ade3eeb9dec5dd7811661b4ced21dea5f24871401"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/receiver/zaman_inbox.py",
+      "sha256": "76ba322144bae118e4a1b61e9bccba340e928c6e0e0ef01908b188160cdc72db"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/receiver/zaman_receiver.py",
+      "sha256": "10099be85079bef824f98d4b1b8408e83314bfff0bb4ad830c32af67817b1b0c"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/receiver/zaman_scraper.py",
+      "sha256": "2091bdb10f142aa83e20d1b5cdff74fac4ff0f335d14734c1f1d1d12d98c920f"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/receiver/zaman_transfer_client.py",
+      "sha256": "018a8fb37670a108e123589baa86ed881960b848440bf71ff32b2c0f3e4b5bb3"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/tests/large_transfer.py",
+      "sha256": "eb95cdd7a3d693e0f34ebfc848cdc63580686df27a075385f39e77d5ae65f69d"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/tests/test_deploy.py",
+      "sha256": "8c024ee84ef628ea9fc62b754b96b5412ee333f088c646982944f5bb326dff5b"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/tests/test_scraper.py",
+      "sha256": "d46155312e23055b28cf038f5225228dfddcefcab9e76cb730a7b81ce9067b32"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/tests/test_transfer.py",
+      "sha256": "e2891c490fc2730597b2115e7d79d595fd9070671b5bddad60ace15bf17796f1"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/ui-tests/CMakeLists.txt",
+      "sha256": "ef3c3fc0027cc0285288be25d13d0b2e6a77c136c3bf43b818d470ee4108ffea"
+    },
+    {
+      "path": "sources/sessiond/tools/transfer/ui-tests/transfer-ui-test.cpp",
+      "sha256": "a8562f0d413d7feee433c6976da7590b30318b2b22ed89de33632c521dfd1ef1"
+    },
+    {
+      "path": "sources/resident-menu/.gitignore",
+      "sha256": "e90e7cd2133d81aa901343ef77d4472b2f77d89248b9effc1a577cd8ac6db086"
+    },
+    {
+      "path": "sources/resident-menu/README.md",
+      "sha256": "88cdd3c8b9d14af1bc93b7eb027ebeedc9096766a2c2bd22febd4c0e92f22b7b"
+    },
+    {
+      "path": "sources/resident-menu/RESIDENT-MENU.md",
+      "sha256": "05ecc1081c9e2ae347f5bf6671e06faed0c1c9cdcaa86f7c5639f47c52c248ec"
+    },
+    {
+      "path": "sources/resident-menu/SHA256.json",
+      "sha256": "6eb17faaec96b664304752bf4ce465ea60be39aefbeb0f8928cafa70accc7f6e"
+    },
+    {
+      "path": "sources/resident-menu/SHA256SUMS",
+      "sha256": "9db4ba6922ae2a3a9b33ab0dfde11f6813961e0710ec543b14962028cfc0a699"
+    },
+    {
+      "path": "sources/resident-menu/apply.py",
+      "sha256": "8c03915863cc31c9e5cd8b1b5264a8fe3503bfa17e8183bf823d58c8ce9a6211"
+    },
+    {
+      "path": "sources/resident-menu/demo-update-runtime.json",
+      "sha256": "b8adf3dd429a6411fb656d63437f17c2d35c0e0827a49f454849475ee1d4f412"
+    },
+    {
+      "path": "sources/resident-menu/install-resident.sh",
+      "sha256": "d9474ba01ac29a225ba65c55e5181fe07a6cd920ba28888289dd8c9523ef4b2d"
+    },
+    {
+      "path": "sources/resident-menu/notification-shell.qml",
+      "sha256": "e3a52e0cf4192c90136cae2fa42ac6bc6e6b9722623105638ffc8138dcd76832"
+    },
+    {
+      "path": "sources/resident-menu/run.sh",
+      "sha256": "302351268158f5c291fb52dff00c2b25ffa462e3cd1c5db0ac62a81198f86412"
+    },
+    {
+      "path": "sources/resident-menu/stop.sh",
+      "sha256": "739b5c11feb148fa31ff8ca8087bc1d5f8c99b52d9a717e2175380bec1d364b7"
+    },
+    {
+      "path": "sources/resident-menu/actions/zaman-menu-session.py",
+      "sha256": "760dd82873c1a1df1fc83af9c2210d49a3770c9a131a9604c496b4bb444023d9"
+    },
+    {
+      "path": "sources/resident-menu/assets/zaman-logo-source.png",
+      "sha256": "fd6a05209cc0d99d4ba45426693495f19c44c633a5fcd53c7f2e19fb3a9e109a"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/ATTRIBUTION.md",
+      "sha256": "3335c6e28cf374505a5c1b41c2aa47275a15fcd6192401b0ecb5b7b27a55cfc7"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/dukkan-dark.png",
+      "sha256": "15ebdb341ee26d4a525edf80abc7abeda0d5463b1c2e35d69d496abc26431de7"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/dukkan-dark.svg",
+      "sha256": "a9797e362312c53617c469d63a0e49cf16a7918569e6e14ac8723f644544f765"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/dukkan-light.png",
+      "sha256": "1015ed9bd879db65ecdaa0ed80e5ed7f5b2fac39dc8d69ee6fd86c08985f6a3d"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/dukkan-light.svg",
+      "sha256": "c3e7ce53cf0d0dcb1e556eaca6fa7a69aead8f7e21b6b2ee20964519e9985c8f"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/dukkan-sign.png",
+      "sha256": "1b497dd7da1d27c6b1d6edf3742e35fb66ad6da597a79ee702bea6246cd5fed1"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/steam-dark.png",
+      "sha256": "aa9fda3d353373ec9253bdc7e9ad531a6267ba39182d67699f77c66ca4c1d27a"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/steam-dark.svg",
+      "sha256": "181dd88af63273357ba8e6c3afdd03b21feb3155dadd23c940abaf0dd510a08a"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/steam-light.png",
+      "sha256": "0e3d35a67669494d20c1384bbaba53a0d31b3880bf5e566dad8981a7dd5a80d7"
+    },
+    {
+      "path": "sources/resident-menu/assets/storefronts/steam-light.svg",
+      "sha256": "8f711edc7e63c95e7997a2e76f1d0ba894a846d66ef2b30262bedf838d4a5b2e"
+    },
+    {
+      "path": "sources/resident-menu/docs/notifications-api.md",
+      "sha256": "7db71eef5b65081eb88193da464660c46c681b1fdd1d5c5ed76e5cb30a371baa"
+    },
+    {
+      "path": "sources/resident-menu/docs/sprint1-storefronts.md",
+      "sha256": "96eb3d5b3a909b5ef7039ea93a10a9741162fa4d95fa7155de5fb136036afe20"
+    },
+    {
+      "path": "sources/resident-menu/docs/sprint4-closure.md",
+      "sha256": "f8ec72fe60c0a73f63b65f92fca648cdc32bcf29793018443ae66eb99d057cf2"
+    },
+    {
+      "path": "sources/resident-menu/docs/sprint4-notifications.md",
+      "sha256": "1d6ab40666a4c6c0cfd568d92b2dceb2e73b70a71420a1d0f5e60e8a857e924c"
+    },
+    {
+      "path": "sources/resident-menu/docs/sprint4-preview.html",
+      "sha256": "c287bfeb01c57b8c91b8b8672f7d7109d63267304d60fa27750cc2a56eef3d92"
+    },
+    {
+      "path": "sources/resident-menu/docs/sprint5-transactions.md",
+      "sha256": "8221580266ada2908a01fb693c07ca049923caac819523ecde15d52a8b1c91c7"
+    },
+    {
+      "path": "sources/resident-menu/docs/sprint7-closeout.md",
+      "sha256": "69f4b9e33a8f7e0fb7a066c63a94577e3d5145a207b3388c863d1f873470346a"
+    },
+    {
+      "path": "sources/resident-menu/docs/history/prototype-readme-before-sprint4.md",
+      "sha256": "29a3ce989307b31be68b0289625e0b3804b4098444ce98037001e7f7fdd2da21"
+    },
+    {
+      "path": "sources/resident-menu/notifications/ToastCard.qml",
+      "sha256": "da16407a601a9773f85704a4a5380ee24917327c841d97b55370d825b6f78534"
+    },
+    {
+      "path": "sources/resident-menu/notifications/model.py",
+      "sha256": "0430235f70f87a6d227d3569d3b45dfec0c3d01be0e188ca964810cc59dab1bf"
+    },
+    {
+      "path": "sources/resident-menu/notifications/server.py",
+      "sha256": "835ca7217c7b4dec1bfe5723f9655f172b20f4110675217a329f38e27a6ac9dd"
+    },
+    {
+      "path": "sources/resident-menu/notifications/transport.py",
+      "sha256": "27b8f3c78d3eba54a5efda950a3b9df52badc4ca8e3a75c5a00c4b2f27167d70"
+    },
+    {
+      "path": "sources/resident-menu/qml/AudioPage.qml",
+      "sha256": "98bb37b382624613f631d5624f915e2a6b6d38c8efedc2aafbc1d553a275866d"
+    },
+    {
+      "path": "sources/resident-menu/qml/BluetoothPage.qml",
+      "sha256": "62cc81220986e316031c299d706c6f9f7543a9333650655036a878264490b7f6"
+    },
+    {
+      "path": "sources/resident-menu/qml/ControllersPage.qml",
+      "sha256": "b78fbdbf23bdf45c7007c7ddcfa5a48de2c96ca41e0bb25f981514d6de6c7898"
+    },
+    {
+      "path": "sources/resident-menu/qml/DisplayPage.qml",
+      "sha256": "1ee22732aa2982eb6a845c6b7ef06bdad8b2434dcf3cdcc8c2c6022ca467ed9a"
+    },
+    {
+      "path": "sources/resident-menu/qml/DukkanMark.qml",
+      "sha256": "4405885225367c51bd8a8ac5d770ecff224da0f9bd3c67342faf4cd66e32043d"
+    },
+    {
+      "path": "sources/resident-menu/qml/ExitGamePage.qml",
+      "sha256": "1281dfd97547fd9a0e4096331fc29e0ad094159592a203333f7bc8abe4319ca3"
+    },
+    {
+      "path": "sources/resident-menu/qml/ManageGamesPage.qml",
+      "sha256": "6d13867b67b76e71bc403b8dc4dd2c50647a94cd20627228d5742d0b39358e27"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuAdjustmentIndicator.qml",
+      "sha256": "b27f8ec51e9bbd137df88511198628669ac350188844f236013a12b06e099bce"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuButtonDiamond.qml",
+      "sha256": "43880fd692aabd25133af4801b2c838a0e20d57f3f30bc078029674c69e706f4"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuChoiceValue.qml",
+      "sha256": "aca5d05893e402aae6b5ce9906eceb506a8574efaf797ac5ea448361fc24eee7"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuFocusBackground.qml",
+      "sha256": "cd8970c55ff354c0f778f6e2b8d7066be7caa2b2be2fce0bdd25e15127b603bb"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuFocusRow.qml",
+      "sha256": "e270eaeb8abe65ec2dee30ff2c41111b4fbe539838820cb196437c75891739d6"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuIcon.qml",
+      "sha256": "6ae15649e2c13cdb187de2c46bfe9fa5aadb968825e3ae27a2e941402209f5c9"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuShoulderGlyph.qml",
+      "sha256": "8f4e3210eb37b4c9bb40b8920d4c4e80036c645e8af4512d7c8618263396b4e1"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuTabBar.qml",
+      "sha256": "aaeceee2eae1f8f96c2a4a2709aebe9fba55658436832f10915c9992ee1a6ccb"
+    },
+    {
+      "path": "sources/resident-menu/qml/MenuText.qml",
+      "sha256": "e4c589bf131ae83208af76e793847d46de487d3c94e334b1ab2dba6a51334b1c"
+    },
+    {
+      "path": "sources/resident-menu/qml/NetworkPage.qml",
+      "sha256": "e521315a14e766c8b129ab1ee2e6a989052f3f8a6f83e90a99d0a077ac62f13b"
+    },
+    {
+      "path": "sources/resident-menu/qml/NotificationClient.qml",
+      "sha256": "b17128291c01dd5b4e333fca3d41ed275657f4648df2c39efd912b20b03eba6a"
+    },
+    {
+      "path": "sources/resident-menu/qml/NotificationToastCard.qml",
+      "sha256": "8195316fed9a5089a44d3b3aaca47fe6704696c26829344c8c9cceb7fab7d636"
+    },
+    {
+      "path": "sources/resident-menu/qml/NotificationToastStack.qml",
+      "sha256": "b6ea2fee4ba840938c9f38c48e747ed988f201c51dc6a773886e050ae40b1489"
+    },
+    {
+      "path": "sources/resident-menu/qml/NotificationsPage.qml",
+      "sha256": "746bd954f842736b0d6157ec0421dadf81ebf2a06ddda282a0bae050028e9fef"
+    },
+    {
+      "path": "sources/resident-menu/qml/PasswordKeyboard.qml",
+      "sha256": "196c4a6b22cfbfa1af14cddeeaccfa3c609718f335a07a7d3e6f3bbaf973e535"
+    },
+    {
+      "path": "sources/resident-menu/qml/ScrapePage.qml",
+      "sha256": "b05293c7b7725a8c02d87e5349744f359ce9ed06ab525155154952adf7449d85"
+    },
+    {
+      "path": "sources/resident-menu/qml/SteamMark.qml",
+      "sha256": "52af580b60d79193567ea9561d92a6aed7aa21f0eb803689f1838c9df290fea9"
+    },
+    {
+      "path": "sources/resident-menu/qml/SteamPaths.js",
+      "sha256": "fc6c54924b5e6f64b3eb1119e7b51d37e0207a218466b3a49cda67d4816c5ad7"
+    },
+    {
+      "path": "sources/resident-menu/qml/StoragePage.qml",
+      "sha256": "881ed76e67a847a1763d2b7ab4a253105ac5768be5d59ca4c3fd2e3b709546cc"
+    },
+    {
+      "path": "sources/resident-menu/qml/TransactionActivityPage.qml",
+      "sha256": "20d19fae3671ea04627d5e620d3a940bacd38f7b52cce2155d500ccdd7f0a43f"
+    },
+    {
+      "path": "sources/resident-menu/qml/TransferPage.qml",
+      "sha256": "391f6e3f043441e54499046c1d45d724b367b8ffcc86b08fe8ad775bc0f51546"
+    },
+    {
+      "path": "sources/resident-menu/qml/ZamanMark.qml",
+      "sha256": "7e818c02ca74615e6f6d51e98d989bbb1c2623e7d7784a5107cf3c12ce80555e"
+    },
+    {
+      "path": "sources/resident-menu/qml/shell.qml",
+      "sha256": "2de10810221c451d0b537c3bf14dba451e95c078d677c64704bec75652459e99"
+    },
+    {
+      "path": "sources/resident-menu/qml/shell.qml.before-storage-path-fix",
+      "sha256": "d4735fc2c42d8d11834e4670193392d01e507ce7a5f852e2df64752e02093ce3"
+    },
+    {
+      "path": "sources/resident-menu/qml/assets/zaman-logo-source.png",
+      "sha256": "fd6a05209cc0d99d4ba45426693495f19c44c633a5fcd53c7f2e19fb3a9e109a"
+    },
+    {
+      "path": "sources/resident-menu/services/zaman-menu-shortcut.service",
+      "sha256": "38845a1a27d2bd1b76d8131c2e70ba272d945361478c31cb8fd759315fb525d2"
+    },
+    {
+      "path": "sources/resident-menu/services/zaman-notifications.service",
+      "sha256": "eaaf78d28f087fec4265bbf95131dce8ab630a16199f9d81cb319fc86b3edc5f"
+    },
+    {
+      "path": "sources/resident-menu/services/zaman-quickshell.service",
+      "sha256": "33db5e1c212c4dbcff57141974665d87c174790b07e7d39f59c7cfcad0036ca2"
+    },
+    {
+      "path": "sources/resident-menu/shortcut/test-shortcut.py",
+      "sha256": "02984d7ac5a9f48e9ee4d95222df45cd625181a4dfdf0cf719adb77f32ebde7f"
+    },
+    {
+      "path": "sources/resident-menu/shortcut/zaman-menu-shortcut.py",
+      "sha256": "5c74d31a9933a1308e0fc1f6f6d93ba13937c7b7dd42b19b63d2b87570d3e708"
+    },
+    {
+      "path": "sources/resident-menu/shortcut/zaman_start_select.yaml",
+      "sha256": "4bd1993e76110a0ed8fad67af8ff5306abdb1797619414dd50cc698cc115d6e2"
+    },
+    {
+      "path": "sources/resident-menu/src/display.rs",
+      "sha256": "24c1ab5d2d4d4dd0073c08067ee890242feb4087f2bff563cfa304f6078bffa0"
+    },
+    {
+      "path": "sources/resident-menu/src/display_bridge.rs",
+      "sha256": "1bdf0051729af464593b9acc685e09f1f740080c79f11fc9b62e98ea7d0cd721"
+    },
+    {
+      "path": "sources/resident-menu/src/zaman-menu-dev-input.rs",
+      "sha256": "4c1430ec605fc51b01599efb96c093b93224a4a489ba9977e4d60cd374824313"
+    },
+    {
+      "path": "sources/resident-menu/src/zaman-menu-dev-pair.rs",
+      "sha256": "f3964269a3e0c583058434cb0f1a1a24f39fab1f6b68802fab5a2e1f827c794c"
+    },
+    {
+      "path": "sources/resident-menu/tests/keyboard-repeat-regression.cjs",
+      "sha256": "77059865b1c75081b8aac4f15fe06daee26f6e9310ad7a0e3d79e2f45da5787a"
+    },
+    {
+      "path": "sources/resident-menu/tests/menu-controller-regression.cjs",
+      "sha256": "e20b33057fe12897884874d569772570c5b56cb494726494be2539ef98a68f47"
+    },
+    {
+      "path": "sources/resident-menu/tests/notification-protocol.py",
+      "sha256": "b1a2d10cd16b96623eeb1fc7ea14d71e0bcb7d073ff9bf7ef4c5891238b2257c"
+    },
+    {
+      "path": "sources/resident-menu/tests/resident-menu-regression.cjs",
+      "sha256": "971f5a36427b9649bec97a2d7071c8cd3312e7739921b3dbcb9bf93fbfc69583"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-action.py",
+      "sha256": "a2160e5c4a62a256ca51a054735165fc99fd65fecd39c272c1814a7c1bbe5fee"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-branding.cjs",
+      "sha256": "0b87e226a1b50b1abe2064b66037930979cffcc9965889dd075852a756658bcd"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-display-cycle.cjs",
+      "sha256": "fbdebecc5759ec2651cbecd292c2c89457bf2033548163aabb455143e667f949"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-emulator-menu.cjs",
+      "sha256": "da7489f7b57506514ab66fcee43180537f840e9ca9350de41769c3f4a45870e7"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-entry-animation.cjs",
+      "sha256": "edc7fc5fa54c3ae047f9f6fa3d7181daec0bf225391e32b2f2b4b4226db54d14"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-exit.cjs",
+      "sha256": "4f21c13e5a7b637fc4e45b6bdb9074a5a6f8f64e2eec10f236852b9377e26098"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-guide-qml.cjs",
+      "sha256": "d3d298f15468002e6268b9e29d45db1153a21f3fb1f6c5a7a1bfa2340564ab61"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-notification-renderer.py",
+      "sha256": "9cceafddbd9cc14df40f89809d0366db658f0d8df69af45ed20804cd35c497e0"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-notifications.py",
+      "sha256": "f555b40da600346fab32d20f15d9e413cd9532b8b184cea7a4c5766294a51336"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-power.py",
+      "sha256": "47c9f544990fa32f5b557b7de90e96028c80791c43328febc737701a0ccb0e62"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-progress-card.cjs",
+      "sha256": "4e044d7e505332221df67b15210a36ede16e5e83399455c773ea6491180a20ec"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-resident-launcher.py",
+      "sha256": "f1f8ebe2d396353e252666695dc5bd9fd24230ee6d9a22ab66f6df1434202ba2"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-scrape.cjs",
+      "sha256": "f0e41d12748595b8ec2a5bd2497ad9df6a49a01e80caa991944b8fcc32532a2a"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-sprint4.cjs",
+      "sha256": "b6920b447721faedc49aab1b2efdad2339e4900a78f1955aa33c73f31f6ecb4b"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-sprint5.cjs",
+      "sha256": "c5c1b7f10f69a04f15abedae3fb8cdc097fe4f4703e26661fbd130353687f213"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-steam-notices.cjs",
+      "sha256": "6bd71e4d3ef98d892e1a5d65f472bdfec1ec1f7b612d4d1ad6a4301d9d91b51e"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-steam-notices.py",
+      "sha256": "ceb4ac13ef3b03b1762aa6ac9a9859b0bf1006a7e2f563ca51fdcdc15afd9d05"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-storefront-action.py",
+      "sha256": "1e8e933b43e43bc84e60985ded098d19d36ff15bd33314d8202ae709cccf28ca"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-storefronts.cjs",
+      "sha256": "e953e9599760133988cb14076c267f5818400779594c79b6250d6a06ca5dcc7d"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-tab-layout.cjs",
+      "sha256": "e0554ad18b3d4679231d946d19bb5b0b0b06e700408e0753d0aaba73d802ada7"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-tab-memory.cjs",
+      "sha256": "053bbc2b390928ee54ce78f8c67b842c80eaeef2020dbe2bab070a12240fa3cc"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-transaction-receipts.py",
+      "sha256": "bf9a8aecf70d7415b0cfa634e9665bb0810d2ba937b53aaaf2d2af1ef72ed584"
+    },
+    {
+      "path": "sources/resident-menu/tests/test-transfer.cjs",
+      "sha256": "8f638f48abfd526d5b88a2a79c055666e286c2bc76c55d58a964e4ab3a55b4c1"
+    },
+    {
+      "path": "sources/resident-menu/tests/ui/CMakeLists.txt",
+      "sha256": "b2e328d4fad974ae732a55e52f23d618e84fe3c85cedb26e7dc833e538a9221a"
+    },
+    {
+      "path": "sources/resident-menu/tests/ui/presentation-ui-test.cpp",
+      "sha256": "a1530752abd17434f7e8d76c1047945afef535bc88e3f7f9243a48081d0e1adc"
+    },
+    {
+      "path": "sources/resident-menu/tools/start-notifications.sh",
+      "sha256": "565748f8c0baebfc3e5e2ed1785771ac2e568ca45c5593b3f61e193915add7d2"
+    },
+    {
+      "path": "sources/resident-menu/tools/zaman-menu-status.py",
+      "sha256": "0b969f6f313366c11c78dee904557505b6bb57d1c82bc87eaa64becf5ce135c9"
+    },
+    {
+      "path": "sources/resident-menu/tools/zaman-notifications",
+      "sha256": "13e7644ad3f633432f911e2596af5b3a89487959c94452a42dabb3d8b98df928"
+    },
+    {
+      "path": "sources/pegasus-theme/README.md",
+      "sha256": "cf05178c0107ea2b8b0de377584f9867142646d0eae15eaf2d3ac3a93bf1f9ee"
+    },
+    {
+      "path": "sources/pegasus-theme/theme.cfg",
+      "sha256": "960bc47d7df3eb3cb6b24e950e350f4a98244c61e31c634e89b85e93611bdc0b"
+    },
+    {
+      "path": "sources/pegasus-theme/theme.qml",
+      "sha256": "e2fbc1bb3900f91f70d4f9c23df8b6f543cd2e1e4643a75a3f2ce11a7ab41187"
+    },
+    {
+      "path": "sources/pegasus-theme/assets/branding/zaman-bird.png",
+      "sha256": "107063f5aa7da54b577eaaada2d118e73359cac3dc59313c83f6198fd17102b3"
+    },
+    {
+      "path": "sources/pegasus-theme/assets/branding/zaman-logo-source.png",
+      "sha256": "fd6a05209cc0d99d4ba45426693495f19c44c633a5fcd53c7f2e19fb3a9e109a"
+    },
+    {
+      "path": "sources/pegasus-theme/assets/branding/zaman-wordmark.png",
+      "sha256": "54677f9443cef65656c53ae11af21663951a366aaaa0918d369820ab3985b754"
+    },
+    {
+      "path": "sources/pegasus-theme/assets/fonts/IBMPlexMono-OFL.txt",
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+    },
+    {
+      "path": "sources/pegasus-theme/assets/fonts/IBMPlexMono-Regular.ttf",
+      "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46"
+    },
+    {
+      "path": "sources/pegasus-theme/assets/fonts/SairaCondensed-OFL.txt",
+      "sha256": "0e2ccc5da1dd979f08ba82bca2fb61592506a1e58d3cbfc26d904f0db71bd812"
+    },
+    {
+      "path": "sources/pegasus-theme/assets/fonts/SairaCondensed-Regular.ttf",
+      "sha256": "8f26edd9f227794818b66f936037dc35bd22674b287087d5d19a93d554d9a6f6"
+    },
+    {
+      "path": "sources/pegasus-theme/assets/fonts/SairaCondensed-SemiBold.ttf",
+      "sha256": "30f8ed4d078211003a9715c80c51ce031bab5c9a17e8771182e4c4599205634b"
+    },
+    {
+      "path": "sources/pegasus-theme/components/ActionButton.qml",
+      "sha256": "b10b2c811c971e8d0f8d2b0f1f96066ebb946c23332ffee123fab1919d4af234"
+    },
+    {
+      "path": "sources/pegasus-theme/components/Brand.qml",
+      "sha256": "3135e0acd483cc43446d11da10d6d70bd2ab14474c7c260757cf70bac5374ed0"
+    },
+    {
+      "path": "sources/pegasus-theme/components/BrandLogo.qml",
+      "sha256": "e17d6532c1360c1bf35840c86f47c1553b83d9c7b8bef5a5613975b8698a991b"
+    },
+    {
+      "path": "sources/pegasus-theme/components/GameArtwork.qml",
+      "sha256": "455199778ffcd3145cbf2ce02640987e763a6c846165735a10678e3d28c305a7"
+    },
+    {
+      "path": "sources/pegasus-theme/components/GameCard.qml",
+      "sha256": "05f92166c9ac16b67d180a400dc5b7f66e383790986f2a50f758b31c5d38a6b9"
+    },
+    {
+      "path": "sources/pegasus-theme/components/MenuButtonDiamond.qml",
+      "sha256": "995405387453ced0db0ffdbda4daf8755b39249b67e44ea2fa0c79bb9b28dba7"
+    },
+    {
+      "path": "sources/pegasus-theme/components/MenuShoulderGlyph.qml",
+      "sha256": "b0d30a3d7e3fd8a0238a5895e8a279fa4955fc0257e8872c6e58acb7e7213c17"
+    },
+    {
+      "path": "sources/pegasus-theme/components/NavigationLegend.qml",
+      "sha256": "60e5db1ee20f28900abdd1414a1053a1be3d87f8b759a6e61fd1143224a25942"
+    },
+    {
+      "path": "sources/pegasus-theme/components/SelectionSurface.qml",
+      "sha256": "8b66e164081928563829474405b8cab232ed7f53c2544b58d1f58673a043cf80"
+    },
+    {
+      "path": "sources/pegasus-theme/components/Shell.qml",
+      "sha256": "b61e3e6217aed3fba3e1a9c8618e00ed65a646db96e15944b3ac65e9da3dbefb"
+    },
+    {
+      "path": "sources/pegasus-theme/components/Surface.qml",
+      "sha256": "4bc03def64a289ce72118cc3c31b8f9d25432ae6108ba2942178affed7771227"
+    },
+    {
+      "path": "sources/pegasus-theme/docs/DESIGN.md",
+      "sha256": "18a9709a2111a348975c54d8b243d30b322f2e781d8d745b51196fc22e8000fd"
+    },
+    {
+      "path": "sources/pegasus-theme/docs/INTEGRATION.md",
+      "sha256": "3bb708f26e16bdc12c3d6d00b4df2773e093acb0f31022db706f1fdb15efa6f6"
+    },
+    {
+      "path": "sources/pegasus-theme/docs/VALIDATION.md",
+      "sha256": "a5b8c3f395f3e0c93dca62e64a4adc2fda238b4a6191a718cb4428a0da49b59c"
+    },
+    {
+      "path": "sources/pegasus-theme/lib/Hints.js",
+      "sha256": "feb433cf88b1a963af2b84e0d0cfa7770aaa0b33231e2a50bfbaed8cc46cbe4c"
+    },
+    {
+      "path": "sources/pegasus-theme/lib/Library.js",
+      "sha256": "cc0f6950096aeb0ddaa5cf6342566c5f8be228ef15ee5be09c3952bd97671819"
+    },
+    {
+      "path": "sources/pegasus-theme/preview/home.png",
+      "sha256": "051e1cb566b00d081de14b61ed16b225d84b7c8ba6e6cc1ef1afeade44a9584f"
+    },
+    {
+      "path": "sources/pegasus-theme/rom-library-refresh/0803f1790af30678c3fa990a5fbbc5a8.signal",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sources/pegasus-theme/steam-library-refresh/f56520f68ff11c08dce327f0f5469e29.signal",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/lib/zaman/zaman-menu-shortcut.py",
+      "sha256": "f300d645a9b66b004f34145412b5fe5f6827b13b027d817627f454e7fabeb094"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/armsx2-launch.py",
+      "sha256": "8015e1c076bd55a56464d633cd337c9cc2e7247a20b654c69d9a2a6569765b1c"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/sprint7-1792351708703195482/zaman_inbox.py",
+      "sha256": "d21d720901e1b8c64bc1a22113485268ff5870bfadbf9c27029314dd75a52b0b"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/sprint7-1792351708703195482/zaman_receiver.py",
+      "sha256": "5371067e55fcd520ec25cf37699897debe6c0be75c0a18621ef5769d74039ccb"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/sprint7-1792351708703195482/zaman_rom_library.py",
+      "sha256": "5b05f6c8d5970ac84512e89d05c027f8b583aec2471f6136730ad9e2f65c03d2"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/sprint7-1792351708703195482/zaman_scraper.py",
+      "sha256": "2091bdb10f142aa83e20d1b5cdff74fac4ff0f335d14734c1f1d1d12d98c920f"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/sprint7-1792351708703195482/zaman_transfer_client.py",
+      "sha256": "018a8fb37670a108e123589baa86ed881960b848440bf71ff32b2c0f3e4b5bb3"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/steam-integration-1792322233618435471/steam-integration.py",
+      "sha256": "5ae0ca6e46cecdb3b0f4a40d7b7abead622f74aab3480464b13fa8f282515755"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/steam-integration-1792322233618435471/zaman_steam_library.py",
+      "sha256": "0dbb37f51e71fe8b7939f89bac378723729648a230f57ec142e214e0082727e1"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/libexec/zaman/steam-integration-1792322233618435471/zaman_steam_session.py",
+      "sha256": "d0a1c4152644820fcfed912cc7791ee2264185e249afea48c6f7404f28fbe2b6"
+    },
+    {
+      "path": "deployment/usr/local/libexec/zaman/flatpak-game-session.py",
+      "sha256": "8e107210d8977245fb8b30543f5f3c10a71a5c8ebbf30457814ead3824cd700b"
+    },
+    {
+      "path": "deployment/usr/local/libexec/zaman/pegasus-library-sync.py",
+      "sha256": "b6a24a947b75d73b6d39f8c727269d98435b8d48502a0a7b2d04bc13490a1530"
+    },
+    {
+      "path": "deployment/usr/local/libexec/zaman/zaman_catalog.py",
+      "sha256": "4da01672a5f3e9dd2008f5d4658b19a4410255f0c4c4cadc8ff76cf3d57305cd"
+    },
+    {
+      "path": "deployment/home/kadhem/.local/share/applications/zaman-pegasus-manage-game.desktop",
+      "sha256": "83b7a4387cae593b99dd66e03a849f5293c793bb8fa33fa35d48259f011daf71"
+    }
+  ],
+  "source_omissions": [
+    {
+      "source": "/home/kadhem/projects/zaman-emulator-menu-sprint7/zaman-sessiond/target/release/zaman-sessiond",
+      "reason": "compiled ELF: rebuild for target; source snapshot omits binary"
+    },
+    {
+      "source": "/home/kadhem/projects/zaman-emulator-menu-sprint7/zaman-sessiond/target/release/zaman-sessiond",
+      "reason": "compiled ELF: rebuild for target; source snapshot omits binary"
+    }
+  ]
+}

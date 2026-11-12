@@ -1,0 +1,46 @@
+# InputPlumber v0.78.0: bind this v2 map to the gamepad source_devices entry.
+version: 2
+kind: CapabilityMap
+name: Zaman Start Select shortcut
+id: zaman_start_select
+mapping:
+  - name: Start Select opens modern menu
+    mapping_type:
+      evdev: chord
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_START
+          value_type: button
+      - evdev:
+          event_type: KEY
+          event_code: BTN_SELECT
+          value_type: button
+    target_event:
+      dbus: zaman_new_menu
+
+  # v0.78.0 swallows unmatched chord members. Restore individual taps on release.
+  # This produces a 100 ms tap; it does NOT preserve holding either button.
+  - name: Standalone Start tap on release
+    mapping_type:
+      evdev: delayed_chord
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_START
+          value_type: button
+    target_event:
+      gamepad:
+        button: Start
+
+  - name: Standalone Select tap on release
+    mapping_type:
+      evdev: delayed_chord
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_SELECT
+          value_type: button
+    target_event:
+      gamepad:
+        button: Select

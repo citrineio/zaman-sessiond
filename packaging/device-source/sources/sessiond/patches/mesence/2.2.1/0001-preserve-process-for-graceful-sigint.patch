@@ -1,0 +1,21 @@
+From: Zaman OS maintainers <opensource@kawnelectro.com>
+Subject: [PATCH] Keep process alive while handling SIGINT
+
+ConsoleCancelEventArgs.Cancel defaults to false. Returning from the
+CancelKeyPress handler without changing it therefore terminates the process
+before the close operation posted to Avalonia's UI thread is guaranteed to
+run.
+
+Cancel the runtime's default termination and let CloseEmu(true) perform the
+normal shutdown path. This allows MesenCE to flush battery-backed saves,
+write the recent-game recovery archive, save configuration, and close its
+window before exiting normally.
+
+Upstream-Tag: 2.2.1
+Upstream-Commit: 20ba206cef5ba207c21203176d02cb9f43dda9fb
+diff --git a/UI/Windows/MainWindow.axaml.cs b/UI/Windows/MainWindow.axaml.cs
+index 4f0728e..2cda856 100644
+--- a/UI/Windows/MainWindow.axaml.cs
++++ b/UI/Windows/MainWindow.axaml.cs
+@@ -190,0 +191 @@
++			e.Cancel = true;

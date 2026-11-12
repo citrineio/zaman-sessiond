@@ -1,0 +1,18 @@
+[Unit]
+Description=Zaman Transfer Games
+Requires=zaman-sessiond.service
+BindsTo=zaman-sessiond.service
+After=zaman-sessiond.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 /opt/zaman-transfer/zaman_transfer_gui.py
+Environment=QT_QPA_PLATFORM=wayland
+Restart=no
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=5
+SendSIGKILL=yes
+
+# On demand only. The session daemon owns this unit and the foreground lease.
+# No Install section: never enable this transfer listener at boot.

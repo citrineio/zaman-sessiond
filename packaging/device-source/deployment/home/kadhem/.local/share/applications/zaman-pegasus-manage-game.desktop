@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Zaman Game Management
+NoDisplay=true
+Exec=/usr/bin/python3 /home/kadhem/.local/libexec/zaman-pegasus-manage-game.py %u
+MimeType=x-scheme-handler/zaman-manage-game;

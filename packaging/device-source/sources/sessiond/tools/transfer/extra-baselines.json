@@ -1,0 +1,5 @@
+{
+  "old_pegasus": "c34403f31f70ae42c391b3337e0da66b63b9172db13322677562c6ccf812144f",
+  "tests/menu-controller-regression.cjs": "b988369645863a1b3808c0133940a2f86e32b623ce94eab1036267e3cbc63fcc",
+  "tests/test-tab-layout.cjs": "cbc7d723bb453bd027b42e7c5bf127facfb11986c9316319ebc3dc152d8b4583"
+}

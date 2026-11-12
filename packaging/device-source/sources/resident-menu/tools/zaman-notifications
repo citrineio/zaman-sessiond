@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Notification service/diagnostics. No package installation or activation."""
+import argparse
+import json
+import os
+from pathlib import Path
+import select
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'notifications'))
+from transport import LIMIT, connect, request
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['serve', 'watch', 'status', 'dismiss', 'dismiss-visible', 'event', 'preferences', 'preflight'])
+    parser.add_argument('--no-renderer', action='store_true', help='protocol testing only')
+    parser.add_argument('--id')
+    parser.add_argument('--json', default='{}')
+    args = parser.parse_args()
+    if args.action == 'serve':
+        from server import serve
+        serve(not args.no_renderer)
+    elif args.action == 'preflight':
+        import gi
+        gi.require_version('Gio', '2.0')
+        from gi.repository import Gio, GLib
+        print('PASS: Python GIO notification bindings; no packages changed')
+    elif args.action == 'watch':
+        with connect() as sock:
+            sock.sendall(b'{"action":"watch"}\n')
+            sock.settimeout(None)
+            pending = b''
+            commands = b''
+            while True:
+                ready, _, _ = select.select([sock, sys.stdin.buffer], [], [])
+                if sock in ready:
+                    data = sock.recv(65536)
+                    if not data:
+                        return 1
+                    pending += data
+                    if len(pending) > LIMIT:
+                        raise ValueError('notification reply too large')
+                    while b'\n' in pending:
+                        line, pending = pending.split(b'\n', 1)
+                        print(line.decode(), flush=True)
+                if sys.stdin.buffer in ready:
+                    data = os.read(sys.stdin.fileno(), 8192)
+                    if not data:
+                        return 0
+                    commands += data
+                    if len(commands) > 8192:
+                        raise ValueError('notification command too large')
+                    while b'\n' in commands:
+                        line, commands = commands.split(b'\n', 1)
+                        sock.sendall(line + b'\n')
+    else:
+        message = json.loads(args.json)
+        if not isinstance(message, dict):
+            raise ValueError('--json requires an object')
+        message['action'] = 'snapshot' if args.action == 'status' else args.action
+        if args.id:
+            message['id'] = args.id
+        print(json.dumps(request(message), ensure_ascii=True))
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, RuntimeError, ImportError) as error:
+        print('ERROR: ' + str(error) + '; inspect zaman-notifications.service and run preflight.', file=sys.stderr)
+        sys.exit(1)

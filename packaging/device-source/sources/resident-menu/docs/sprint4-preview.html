@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Zaman Sprint 4 proposed menu</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111720;color:#eceef1;font:18px Arial,sans-serif;height:1080px;padding:28px;display:flex;align-items:stretch;gap:40px}.panel{width:700px;background:linear-gradient(#171d28,#12161e,#17191f);border:1px solid #405d718c;border-radius:24px;padding:32px;display:flex;flex-direction:column}.brand{display:flex;align-items:center;justify-content:space-between;height:65px;margin-bottom:28px}.word{font-size:33px;letter-spacing:6px;color:#eee1cf}.clock{font-size:14px;color:#bbc6d3}.tabs{display:flex;gap:7px;align-items:center;width:100%}.tabs .tab{flex:0 0 104px;padding:12px 8px;transition:flex-grow 180ms cubic-bezier(.215,.61,.355,1),background 120ms}.tabs .tab[data-tab="Notifications"]{flex-basis:171px}.tabs .tab.active{flex-grow:1}.tabs .shoulder{flex:0 0 40px;position:relative;height:29px;border:1px solid #8494a8;border-radius:9px 9px 12px 12px}.shoulder:before,.shoulder:after{content:"";position:absolute;top:3px;width:9px;height:4px;border:1px solid #8494a8;border-radius:2px}.shoulder:before{left:5px}.shoulder:after{right:5px}.shoulder.left:before,.shoulder.right:after{background:#eac28d;border-color:#eac28d}.tab,button{border:0;background:#1d2634;border-radius:10px;color:#bbc6d3;font:inherit;padding:12px 18px;cursor:pointer}.tab.active,.row.active{background:#eac28d;color:#211e1b}.shoulder{font-size:16px;color:#eac28d}h1{font-size:29px;margin:24px 0 12px}p{font-size:15px;color:#bbc6d3;margin:0 0 24px}.rows{display:grid;gap:8px;overflow:auto}.row{border-radius:12px;background:#1d2634;padding:18px 20px;display:flex;gap:18px;align-items:center;min-height:88px}.icon{width:32px;height:32px;color:#dec09a;display:grid;place-items:center;font-size:25px}.active .icon{color:#30271e}.row strong{font-size:23px;font-weight:400;display:block;margin-bottom:7px}.row small{font-size:14px;color:#bbc6d3}.row.active small{color:#473627}.footer{margin-top:auto;border-top:1px solid #265c6e85;padding-top:22px;display:flex;flex-wrap:wrap;gap:18px;color:#bbc6d3;font-size:14px}.key{border:1px solid #8494a8;border-radius:100%;padding:4px 7px;margin-right:6px;color:#eac28d}.lower{display:flex;justify-content:space-between;color:#9fadbf;font-size:10px;letter-spacing:1px;margin-top:24px}.right{flex:1;display:flex;flex-direction:column;align-items:flex-end}.label{color:#9fadbf;font-size:14px;margin-top:auto}.toast{margin:4px 4px 10px;background:#171d28;border:1px solid #405d718c;border-left:3px solid #eac28d;border-radius:12px;padding:17px;display:flex;gap:15px;width:420px;align-items:center}.toast strong{font-size:22px;font-weight:400;display:block;margin-bottom:8px}.toast span{font-size:16px;color:#bbc6d3}.toast .icon{flex-shrink:0;color:#8ab9a1}.toast{border-left-color:#8ab9a1} .subtle{color:#9fadbf;font-size:14px}
+.legend-action{display:flex;align-items:center;gap:7px;background:transparent;padding:0;color:inherit;font:inherit}.face{width:28px;height:28px;vertical-align:middle}.arrows{color:#eac28d;margin-right:7px}.rows{position:relative}
+</style>
+<div class="panel"><div class="brand"><div class="word">ZAMAN <span style="font-size:14px;letter-spacing:0">OS</span><div style="font-size:10px;letter-spacing:2px;margin-top:10px">PLAY EXPLORE BELONG</div></div><div class="clock">6:32 AM</div></div><div class="tabs"><span class="shoulder left" aria-label="Previous tab, left shoulder"></span><button class="tab" data-tab="Home">Home</button><button class="tab active" data-tab="Notifications">Notifications · 3</button><button class="tab" data-tab="Settings">Settings</button><span class="shoulder right" aria-label="Next tab, right shoulder"></span></div><h1 id="title">Notifications</h1><p id="subtitle">Your recent system notifications.</p><div id="rows" class="rows"></div><div class="footer" id="footer"></div><div class="lower"><span>KAWN ELECTRO</span><span>TABS</span></div></div><div class="right"><div class="toast" id="toast"><div class="icon">♧</div><div><strong>Controller connected</strong><span>Ready to play</span></div></div><div class="subtle">Popups remain visible in every menu section</div><div class="label">SPRINT 4 · PROPOSED LAYOUT · EXAMPLE EVENTS</div></div>
+<script>
+const values={Home:[['▷','Resume','Return to your game'],['◖','Audio','Volume and audio output'],['⏻','Power','Device power options'],['⇥','Exit Game','Close the current game']],Notifications:[['♧','Controller connected','Today 6:30 AM · Zaman'],['↓','Installation complete','Today 6:28 AM · Dukkan'],['⌁','Wi-Fi connected','Today 6:24 AM · Zaman']],Settings:[['◖','Audio','Volume and audio output'],['♧','Notifications','Do Not Disturb and shortcut reminders'],['♧','Controllers','Connected controllers and input profiles'],['⌁','Network','Connections and saved networks'],['ᛒ','Bluetooth','Pair and manage devices'],['▱','Display','Resolution and refresh rate']]};
+let currentTab='Notifications';
+function face(name){
+ return '<svg class="face" viewBox="0 0 28 28" aria-hidden="true">'+
+  [['north',14,5],['west',5,14],['east',23,14],['south',14,23]].map(([side,x,y])=>
+   `<circle cx="${x}" cy="${y}" r="3" stroke="${side===name?'#eac28d':'#8494a8'}" fill="${side===name?'#eac28d':'none'}"/>`).join('')+'</svg>';
+}
+function dismissSelected(){
+ if(currentTab!=='Notifications')return;
+ const row=document.querySelector('.row.active');if(!row)return;
+ const rows=document.getElementById('rows');
+ const remaining=[...rows.children].filter(e=>e!==row && e.dataset.closing!=='true');
+ const index=[...rows.children].indexOf(row);
+ const next=remaining[Math.min(index,remaining.length-1)];
+ row.dataset.closing='true';row.classList.remove('active');row.style.pointerEvents='none';
+ if(next)next.classList.add('active');
+ values.Notifications=values.Notifications.filter(r=>r[1]!==row.dataset.title);
+ const before=remaining.map(e=>[e,e.getBoundingClientRect().top]);
+ row.style.top=row.offsetTop+'px';row.style.width=row.offsetWidth+'px';row.style.position='absolute';
+ row.animate([{transform:'translateX(0)',opacity:1},{transform:'translateX(96px)',opacity:0}],
+  {duration:180,easing:'cubic-bezier(.215,.61,.355,1)',fill:'forwards'}).onfinish=()=>row.remove();
+ for(const [element,y] of before){
+  const delta=y-element.getBoundingClientRect().top;
+  if(delta)element.animate([{transform:`translateY(${delta}px)`},{transform:'translateY(0)'}],
+   {duration:180,easing:'cubic-bezier(.215,.61,.355,1)'});
+ }
+}
+function show(tab){
+ currentTab=tab;
+ document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+ document.getElementById('title').textContent=tab;
+ document.getElementById('subtitle').textContent=tab==='Home'?'Your game is still running.':tab==='Settings'?'Devices, connections and personalization.':'Your recent system notifications.';
+ document.getElementById('rows').replaceChildren(...values[tab].map(([icon,title,detail],i)=>{
+  const e=document.createElement('div');e.className='row'+(i===0?' active':'');e.dataset.title=title;
+  e.innerHTML='<div class="icon">'+icon+'</div><div><strong>'+title+'</strong><small>'+detail+'</small></div>';
+  e.onclick=()=>{document.querySelectorAll('.row').forEach(r=>r.classList.remove('active'));e.classList.add('active')};return e;
+ }));
+ document.getElementById('footer').innerHTML='<span><span class="arrows">↑↓</span>Navigate</span><span>'+face('south')+' '+(tab==='Notifications'?'Details':'Select')+'</span><span>'+face('east')+' Back</span>'+
+  (tab==='Notifications'?'<button class="legend-action" id="dismiss">'+face('west')+'Dismiss</button><button class="legend-action" id="clear">'+face('north')+'Clear history</button>':tab==='Home'?'<span>'+face('west')+' Dismiss popups</span>':'');
+ if(tab==='Notifications'){
+  document.getElementById('dismiss').onclick=dismissSelected;
+  document.getElementById('clear').onclick=()=>{if(confirm('Clear example notification history?')){values.Notifications=[];show(tab)}};
+ }
+ document.getElementById('toast').style.visibility='visible';
+ document.querySelector('.subtle').style.visibility='visible';
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>show(b.dataset.tab));
+document.addEventListener('keydown',e=>{
+ if(e.key.toLowerCase()==='x'){dismissSelected();e.preventDefault()}
+ if(e.key==='ArrowUp'||e.key==='ArrowDown'){
+  const rows=[...document.querySelectorAll('.row')].filter(r=>r.dataset.closing!=='true');
+  if(!rows.length)return;
+  const current=rows.findIndex(r=>r.classList.contains('active'));
+  rows[(current+(e.key==='ArrowDown'?1:-1)+rows.length)%rows.length].click();e.preventDefault();
+ }
+});
+show('Notifications');
+</script></html>
