@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Checks release completeness, source-path handling and package file ownership."""
 import importlib.util
+import contextlib
+import io
 import json
 import subprocess
+import tarfile
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +20,90 @@ def load(name, file):
 
 
 class PackageTools(unittest.TestCase):
+    def test_protected_optional_directory_is_reported(self):
+        exporter = load('exporter_optional_scan', 'export-zaman-stack.py')
+        with tarfile.open(fileobj=io.BytesIO(), mode='w') as archive:
+            snap = exporter.Snapshot(archive, 'fixture', 1024)
+            with patch.object(Path, 'iterdir', side_effect=PermissionError(13, 'denied', '/etc/polkit-1/rules.d')):
+                self.assertEqual(snap.named_files('/etc/polkit-1/rules.d'), [])
+            self.assertEqual(snap.errors, [])
+            self.assertEqual(snap.skipped[0]['source'], '/etc/polkit-1/rules.d')
+
+    def test_walk_permission_errors_are_never_silent(self):
+        exporter = load('exporter_walk', 'export-zaman-stack.py')
+        with tempfile.TemporaryDirectory() as td, tarfile.open(fileobj=io.BytesIO(), mode='w') as archive:
+            snap = exporter.Snapshot(archive, 'fixture', 1024)
+            root = Path(td)
+            def walk(source, **kwargs):
+                kwargs['onerror'](PermissionError(13, 'denied', str(root / 'blocked')))
+                return iter([])
+            with patch.object(exporter.os, 'walk', walk):
+                snap.tree(root, 'optional', required=False)
+                snap.tree(root, 'sources/required')
+            self.assertEqual(len(snap.skipped), 1)
+            self.assertEqual(len(snap.errors), 1)
+            self.assertEqual(snap.errors[0]['source'], str(root / 'blocked'))
+
+    def export_permission_fixture(self, deny_source=False):
+        exporter = load('exporter_permissions_main', 'export-zaman-stack.py')
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            roots = [home / name for name in ['daemon', 'menu', 'theme']]
+            for root, files in zip(roots, [
+                ['Cargo.toml', 'src/main.rs'], ['run.sh', 'qml/shell.qml'], ['theme.qml', 'theme.cfg']]):
+                for name in files:
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('source fixture')
+            helper = home / '.local/lib/zaman/helper.py'
+            helper.parent.mkdir(parents=True)
+            helper.write_text('optional helper fixture')
+            binary = roots[0] / 'target/release/zaman-sessiond'
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'\x7fELFfixture')
+            output = home / 'snapshot.tar.gz'
+            original_iter, original_read, original_open = Path.iterdir, Path.read_bytes, Path.open
+            def iterdir(path):
+                if str(path) == '/etc/polkit-1/rules.d':
+                    raise PermissionError(13, 'denied', str(path))
+                return original_iter(path)
+            def read_bytes(path):
+                if path == helper or (deny_source and path == roots[0] / 'src/main.rs'):
+                    raise PermissionError(13, 'denied', str(path))
+                return original_read(path)
+            def open_file(path, *args, **kwargs):
+                if path == binary:
+                    raise PermissionError(13, 'denied', str(path))
+                return original_open(path, *args, **kwargs)
+            argv = ['export', '--sessiond-dir', str(roots[0]), '--menu-dir', str(roots[1]),
+                    '--theme-dir', str(roots[2]), '--output', str(output)]
+            with patch.object(exporter.sys, 'argv', argv), patch.object(Path, 'home', return_value=home), \
+                 patch.object(Path, 'iterdir', iterdir), patch.object(Path, 'read_bytes', read_bytes), \
+                 patch.object(Path, 'open', open_file), patch.object(exporter, 'proc_paths', return_value=[]), \
+                 patch.object(exporter, 'helper_projects', return_value=({}, {})), \
+                 patch.object(exporter.shutil, 'which', return_value=None), \
+                 patch.object(exporter, 'run', side_effect=lambda argv: {'argv': argv, 'returncode': 1, 'stdout': '', 'stderr': ''}), \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                status = exporter.main()
+            with tarfile.open(output) as archive:
+                manifest = next(m for m in archive.getmembers() if m.name.endswith('/manifest.json'))
+                result = json.load(archive.extractfile(manifest))
+            return status, result, helper, binary
+
+    def test_export_succeeds_with_optional_permissions_denied(self):
+        status, manifest, helper, binary = self.export_permission_fixture()
+        self.assertEqual(status, 0)
+        self.assertEqual(manifest['errors'], [])
+        skipped = {entry['source'] for entry in manifest['skipped']}
+        self.assertTrue({'/etc/polkit-1/rules.d', str(helper), str(binary)} <= skipped)
+        self.assertTrue(any(entry['path'].endswith('sources/sessiond/src/main.rs') for entry in manifest['files']))
+
+    def test_required_source_permission_failure_blocks_export(self):
+        status, manifest, _, _ = self.export_permission_fixture(deny_source=True)
+        self.assertEqual(status, 1)
+        self.assertEqual(len(manifest['errors']), 1)
+        self.assertTrue(manifest['errors'][0]['source'].endswith('/daemon/src/main.rs'))
+
     def test_complete_release(self):
         installer = load('installer', 'install.py')
         release = {'assets': [{'name': name + '_1.0_' + ('arm64' if name in {'zaman-sessiond', 'zaman-quickshell-runtime'} else 'all') + '.deb'} for name in installer.REQUIRED]}

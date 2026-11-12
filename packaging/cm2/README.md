@@ -56,6 +56,12 @@ a different checkout is exported as a separate Rust project and built from that
 project's Cargo.toml/Cargo.lock. The presence of two active Zaman source trees
 does not force the daemon and helper to be selected from the same checkout.
 
+Optional installed configuration, policy directories and binary diagnostics are
+read without elevated privileges. Unreadable optional paths are recorded in the
+snapshot's skipped list and do not stop publication. Read failures in component
+source trees, helper projects or explicit `--extra` paths make the export
+incomplete and block publication, including failures while listing a directory.
+
 If discovery is ambiguous, pass the actual paths directly:
 
 ```sh

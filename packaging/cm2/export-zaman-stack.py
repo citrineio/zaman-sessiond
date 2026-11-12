@@ -224,6 +224,32 @@ class Snapshot:
     def note(self, path, reason):
         self.skipped.append({'source': str(path), 'reason': reason})
 
+    def read_error(self, path, error, required):
+        if required:
+            self.errors.append({'source': str(path), 'error': str(error)})
+        else:
+            self.note(path, 'unreadable optional path: ' + str(error))
+
+    def named_files(self, directory):
+        """Inspect optional installed Zaman files without needing system privileges."""
+        directory = Path(directory)
+        try:
+            entries = sorted(directory.iterdir())
+        except FileNotFoundError:
+            return []
+        except OSError as error:
+            self.read_error(directory, error, required=False)
+            return []
+        result = []
+        for entry in entries:
+            if 'zaman' in entry.name.lower():
+                try:
+                    if entry.is_file():
+                        result.append(entry)
+                except OSError as error:
+                    self.read_error(entry, error, required=False)
+        return result
+
     def add_bytes(self, name, data, mode=0o644, origin=None):
         if name in self.seen:
             return
@@ -236,7 +262,7 @@ class Snapshot:
         self.entries.append({'path': name, 'source': origin,
                              'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
 
-    def file(self, path, name):
+    def file(self, path, name, required=True):
         try:
             before = path.stat()
             if not stat.S_ISREG(before.st_mode):
@@ -258,16 +284,25 @@ class Snapshot:
             mode = 0o755 if before.st_mode & 0o111 else 0o644
             self.add_bytes(name, data, mode, str(path))
         except OSError as e:
-            self.errors.append({'source': str(path), 'error': str(e)})
+            self.read_error(path, e, required)
 
-    def tree(self, source, dest):
-        source = source.resolve()
-        if not source.exists():
+    def tree(self, source, dest, required=True):
+        try:
+            source = source.resolve(strict=True)
+            mode = source.stat().st_mode
+        except (OSError, RuntimeError) as error:
+            if required or not isinstance(error, FileNotFoundError):
+                self.read_error(source, error, required)
             return
-        if source.is_file():
-            self.file(source, dest)
+        if stat.S_ISREG(mode):
+            self.file(source, dest, required)
             return
-        for current, dirs, files in os.walk(source, followlinks=False):
+        if not stat.S_ISDIR(mode):
+            self.note(source, 'not a regular file or directory')
+            return
+        def walk_error(error):
+            self.read_error(error.filename or source, error, required)
+        for current, dirs, files in os.walk(source, followlinks=False, onerror=walk_error):
             current = Path(current)
             accepted = []
             for name in sorted(dirs):
@@ -278,7 +313,12 @@ class Snapshot:
                     continue
                 if name in SKIP_DIRS or name.startswith(('build-', 'target-')):
                     continue
-                if p.is_symlink():
+                try:
+                    symlink = p.is_symlink()
+                except OSError as error:
+                    self.read_error(p, error, required)
+                    continue
+                if symlink:
                     self.note(p, 'directory symlink not followed; export target via --extra if needed')
                     continue
                 accepted.append(name)
@@ -289,13 +329,16 @@ class Snapshot:
                     continue
                 if name in {'.netrc', '.npmrc', '.pypirc', 'credentials.json'}:
                     continue
-                if p.is_symlink():
-                    try:
+                try:
+                    if p.is_symlink():
                         p.resolve().relative_to(source)
-                    except (ValueError, OSError, RuntimeError):
-                        self.note(p, 'external/broken symlink; export target via --extra if needed')
-                        continue
-                self.file(p, str(Path(dest) / p.relative_to(source)))
+                except (ValueError, RuntimeError):
+                    self.note(p, 'external/broken symlink; export target via --extra if needed')
+                    continue
+                except OSError as error:
+                    self.read_error(p, error, required)
+                    continue
+                self.file(p, str(Path(dest) / p.relative_to(source)), required)
 
 
 def main():
@@ -393,14 +436,19 @@ def main():
                 Path('/usr/local/share/zaman'), Path('/usr/share/zaman'),
                 Path('/etc/zaman'), Path('/etc/inputplumber'),
                 home / '.config/zaman']
-            deployment.extend(Path(x).expanduser().absolute() for x in args.extra)
-            for p in deployment:
-                if not p.exists():
+            deployment = [(p, False) for p in deployment]
+            deployment.extend((Path(x).expanduser().absolute(), True) for x in args.extra)
+            for p, required in deployment:
+                try:
+                    resolved = p.resolve(strict=True)
+                except (OSError, RuntimeError) as error:
+                    if required or not isinstance(error, FileNotFoundError):
+                        snap.read_error(p, error, required)
                     continue
                 # No /, /home, or whole-home export via --extra.
-                if p.resolve() in {Path('/'), home.resolve(), Path('/home'), Path('/etc'), Path('/usr')}:
+                if resolved in {Path('/'), home.resolve(), Path('/home'), Path('/etc'), Path('/usr')}:
                     raise ValueError(f'Refusing broad deployment path: {p}')
-                snap.tree(p, 'deployment/' + str(p.absolute()).lstrip('/'))
+                snap.tree(p, 'deployment/' + str(p.absolute()).lstrip('/'), required=required)
             # Preserve units as reference text, never auto-activate source-machine units.
             for unit, record in records.items():
                 cat = run(['systemctl', '--user', 'cat', unit])
@@ -413,7 +461,7 @@ def main():
                     if p is not None:
                         try:
                             if p.is_file() and (p.suffix in {'.py', '.sh', '.qml'} or 'zaman' in p.name.lower()):
-                                snap.tree(p, 'deployment/' + str(p.absolute()).lstrip('/'))
+                                snap.tree(p, 'deployment/' + str(p.absolute()).lstrip('/'), required=False)
                         except (OSError, RuntimeError, ValueError) as error:
                             snap.note(p, 'unreadable optional service reference: ' + str(error))
             for directory in ['/usr/local/bin', str(home / '.local/bin'),
@@ -423,11 +471,8 @@ def main():
                 '/etc/udev/rules.d', '/usr/lib/udev/rules.d',
                 '/usr/share/applications', '/usr/local/share/applications',
                 str(home / '.local/share/applications')]:
-                p = Path(directory)
-                if p.is_dir():
-                    for f in sorted(p.iterdir()):
-                        if 'zaman' in f.name.lower() and f.is_file():
-                            snap.tree(f, 'deployment/' + str(f.absolute()).lstrip('/'))
+                for f in snap.named_files(directory):
+                    snap.tree(f, 'deployment/' + str(f.absolute()).lstrip('/'), required=False)
             for unit in ['inputplumber.service', 'greetd.service', 'lightdm.service']:
                 cat = run(['systemctl', 'cat', unit])
                 if cat['returncode'] == 0:
@@ -441,13 +486,16 @@ def main():
                 if located:
                     candidate_binaries.append(Path(located))
             for p in candidate_binaries:
-                if p.is_file():
-                    with p.open('rb') as stream:
-                        magic = stream.read(4)
-                    binaries.append({'path': str(p), 'sha256': sha256_file(p),
-                        'file': run(['file', str(p)]),
-                        'symbol_versions': run(['readelf', '--version-info', str(p)])
-                            if magic == b'\x7fELF' else None})
+                try:
+                    if p.is_file():
+                        with p.open('rb') as stream:
+                            magic = stream.read(4)
+                        binaries.append({'path': str(p), 'sha256': sha256_file(p),
+                            'file': run(['file', str(p)]),
+                            'symbol_versions': run(['readelf', '--version-info', str(p)])
+                                if magic == b'\x7fELF' else None})
+                except OSError as error:
+                    snap.read_error(p, error, required=False)
             inventory = {
                 'uname': run(['uname', '-a']), 'libc': run(['getconf', 'GNU_LIBC_VERSION']),
                 'packages': run(['dpkg-query', '-W', '-f=${binary:Package}\t${Version}\t${Architecture}\n']),
