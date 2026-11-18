@@ -1,0 +1,77 @@
+name: Standalone sessiond Debian 13 ARM64
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'assets/**'
+      - 'registry/**'
+      - 'catalog/**'
+      - 'interfaces/**'
+      - 'dist/systemd/user/zaman-sessiond.service'
+      - 'dist/dbus-1/services/**'
+      - 'tools/**'
+      - 'packaging/sessiond/**'
+      - '.github/workflows/sessiond-deb.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: sessiond-deb-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: ubuntu-24.04-arm
+    container: debian:trixie
+    timeout-minutes: 60
+    steps:
+      - name: Install Debian 13 toolchain and dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git rustc cargo build-essential pkg-config dpkg-dev \
+            libsdl2-dev libsdl2-ttf-dev python3 gh
+      - uses: actions/checkout@v4
+      - name: Prepare package version
+        shell: bash
+        run: |
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          echo "DEB_VERSION=${VERSION}+git.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+      - name: Test and build native ARM64 binaries
+        run: |
+          cargo test --locked --lib
+          cargo build --release --locked \
+            --bin zaman-sessiond --bin zamanctl \
+            --bin zaman-menu-dev-input --bin zaman-menu-dev-pair
+      - name: Build and verify Debian package
+        shell: bash
+        run: |
+          python3 -m py_compile packaging/sessiond/package.py
+          python3 packaging/sessiond/package.py --version "$DEB_VERSION"
+          PACKAGE="packaging/out/sessiond/zaman-sessiond_${DEB_VERSION}_arm64.deb"
+          test -f "$PACKAGE"
+          test "$(dpkg-deb -f "$PACKAGE" Package)" = zaman-sessiond
+          test "$(dpkg-deb -f "$PACKAGE" Architecture)" = arm64
+          dpkg-deb -c "$PACKAGE" | grep -q 'usr/libexec/zaman-sessiond'
+          dpkg-deb -c "$PACKAGE" | grep -q 'usr/bin/zamanctl'
+          dpkg-deb -c "$PACKAGE" | grep -q 'usr/lib/systemd/user/zaman-sessiond.service'
+          dpkg-deb -c "$PACKAGE" | grep -q 'usr/share/dbus-1/services/com.kawnelectro.Zaman.Session1.service'
+          (cd packaging/out/sessiond && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sessiond-trixie-arm64
+          path: packaging/out/sessiond/*
+          if-no-files-found: error
+      - name: Publish standalone prerelease
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "sessiond-trixie-${DEB_VERSION}" packaging/out/sessiond/* \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Zaman sessiond Debian 13 ARM64 ${DEB_VERSION}" \
+            --notes "Standalone ARM64 daemon and CLI; does not include Quickshell/menu/theme. Installation does not auto-start or restart the service. See packaging/sessiond/README.md."
