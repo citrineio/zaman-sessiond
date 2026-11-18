@@ -54,10 +54,11 @@ jobs:
           test -f "$PACKAGE"
           test "$(dpkg-deb -f "$PACKAGE" Package)" = zaman-sessiond
           test "$(dpkg-deb -f "$PACKAGE" Architecture)" = arm64
-          dpkg-deb -c "$PACKAGE" | grep -q 'usr/libexec/zaman-sessiond'
-          dpkg-deb -c "$PACKAGE" | grep -q 'usr/bin/zamanctl'
-          dpkg-deb -c "$PACKAGE" | grep -q 'usr/lib/systemd/user/zaman-sessiond.service'
-          dpkg-deb -c "$PACKAGE" | grep -q 'usr/share/dbus-1/services/com.kawnelectro.Zaman.Session1.service'
+          dpkg-deb -c "$PACKAGE" > "$RUNNER_TEMP/package-contents.txt"
+          grep -Fq 'usr/libexec/zaman-sessiond' "$RUNNER_TEMP/package-contents.txt"
+          grep -Fq 'usr/bin/zamanctl' "$RUNNER_TEMP/package-contents.txt"
+          grep -Fq 'usr/lib/systemd/user/zaman-sessiond.service' "$RUNNER_TEMP/package-contents.txt"
+          grep -Fq 'usr/share/dbus-1/services/com.kawnelectro.Zaman.Session1.service' "$RUNNER_TEMP/package-contents.txt"
           (cd packaging/out/sessiond && sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
